@@ -1,0 +1,31 @@
+@url = http://127.0.0.1:20476
+@basic = bXk6bXk=
+
+###
+POST {{url}}/auth/login
+Content-Type: application/json
+
+{
+  "username": "demo",
+  "password": "demopass",
+  "clientId": "my",
+  "codeChallenge": "plP8aHmykBUgarC_HDHzGmYhnJiipBy69FE8KWoLMqI",
+  "redirect": "http://localhost:3000/",
+  "scope": "openid profile",
+  "state": "demo-state",
+  "nonce": "demo-nonce"
+}
+
+###
+POST {{url}}/token
+Content-Type: application/x-www-form-urlencoded
+Authorization: Basic {{basic}}
+
+grant_type=authorization_code&code=replace_with_code&code_verifier=replace_with_code_verifier&redirect_uri=http://localhost:3000/
+
+###
+POST {{url}}/token
+Content-Type: application/x-www-form-urlencoded
+Authorization: Basic {{basic}}
+
+grant_type=refresh_token&refresh_token=replace_with_refresh_token

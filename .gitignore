@@ -1,0 +1,12 @@
+conf-local.json
+conf.json
+frontend/node_modules/
+frontend/dist/
+my-oauth
+my-oauth.exe
+myoauth
+*.log
+private_key
+oauth.private.pem
+oauth.private.public.pem
+.env

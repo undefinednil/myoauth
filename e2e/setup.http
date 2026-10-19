@@ -1,0 +1,39 @@
+@url = http://127.0.0.1:20476
+
+###
+POST {{url}}/setup/register
+Content-Type: application/json
+
+{
+    "username": "demo",
+    "password": "demopass",
+    "invitationCode": "demo"
+}
+
+###
+GET {{url}}/setup/client-list
+
+###
+POST {{url}}/setup/client-create
+Content-Type: application/json
+
+{
+  "clientId": "my",
+  "secret": "my"    ,
+  "redirects": "http://localhost:3000/,http://127.0.0.1:3000/",
+  "accessTokenAge": 1,
+  "refreshTokenAge": 24,
+  "adminPassword": "demo"
+}
+
+### 
+DELETE {{url}}/setup/client-delete
+Content-Type: application/json
+
+{
+  "id": 1,
+  "adminPassword": "demo"
+}
+
+###
+GET {{url}}/setup/public-key
