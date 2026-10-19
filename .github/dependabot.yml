@@ -1,0 +1,31 @@
+# Dependabot: weekly dependency and base-image updates.
+# Security updates are opened immediately regardless of the schedule.
+version: 2
+updates:
+  # Go modules (root go.mod / go.sum).
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Frontend npm packages (frontend/package.json + package-lock.json).
+  - package-ecosystem: npm
+    directory: "/frontend"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Container base images pinned in the Dockerfile (digest bumps included).
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # GitHub Actions used in .github/workflows/.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

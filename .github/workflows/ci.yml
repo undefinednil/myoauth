@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# Least privilege: every job only needs to read the repository.
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Go
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: vet
+        run: go vet ./...
+      - name: test (with coverage)
+        run: go test ./... -count=1 -coverprofile=coverage.out
+      # Report-only: prints the total statement coverage; no gate is enforced
+      # (the threshold would fail on unrelated churn).
+      - name: coverage summary
+        run: go tool cover -func=coverage.out | tail -1
+      - name: test (race)
+        run: go test ./... -count=1 -race
+
+  golangci:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      # Version pinned to match .golangci.yml (v2 schema). Bump both together.
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.15.0
+
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "26.13"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: install
+        run: npm ci
+      # Biome returns success while reporting pre-existing warnings; only real
+      # lint/format errors fail the job.
+      - name: lint (biome)
+        run: npx biome check .
+      - name: build
+        run: npm run build
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: build image
+        run: docker build -t myoauth:ci .

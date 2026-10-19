@@ -1,0 +1,76 @@
+# MyOAuth via Docker Compose.
+#
+# The container runs as uid:gid 100:101 (non-root, see Dockerfile), so the host
+# files it reads/writes must be owned by / writable to 100:101.
+#
+# The single configuration file is `.env`. The container image ships safe
+# defaults (port, /data paths, secure cookies, trust proxy), so `.env` only
+# needs the per-deployment values (issuer, admin password, optional forward
+# auth). The RSA signing key is auto-generated in /data on first boot.
+#
+# First run (from the repo root):
+#   1. cp .env.example .env            # then edit the values you need
+#   2. mkdir -p data
+#   3. chown -R 100:101 data           # writable by the container
+#   4. docker compose up -d --build
+#
+# The key is generated in /data (and thus persists across restarts). To use a
+# pre-made key instead, mount it and point MYOAUTH_RSA_PRIVATE_KEY_PATH at it
+# (e.g. `bash scripts/gen_keys.sh oauth.private.pem` then mount it read-only).
+#
+# The port is published on loopback only (127.0.0.1:20476), so it is not exposed
+# publicly; put a reverse proxy in front for external access.
+#
+# Production note: `image: myoauth:latest` is convenient for local builds, but
+# production deployments should pin a versioned tag (e.g. myoauth:1.4.0) and
+# keep the previous tag available so a rollback is `image:` + `up -d` (plus the
+# pre-upgrade DB backup). See the "Upgrades and rollback" section of README.md.
+
+services:
+  myoauth:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: myoauth:latest
+    env_file:
+      # Optional: the stack boots with the Docker defaults when `.env` is absent.
+      # The long syntax (`required: false`) needs Docker Compose >= 2.24; on
+      # older Compose drop this `env_file` block entirely (or upgrade Compose).
+      - path: .env
+        required: false
+    ports:
+      # Loopback only: never exposed on a public interface.
+      - "127.0.0.1:20476:20476"
+    volumes:
+      # Persistent SQLite database, log file and auto-generated RSA key.
+      - ./data:/data
+    restart: unless-stopped
+
+    # --- Container hardening ------------------------------------------------
+    # The app writes only under /data (bind-mounted above) and /tmp (tmpfs
+    # below), so a read-only root filesystem is safe: SQLite temp files land
+    # in /tmp, and the DB/WAL/log/RSA key live in /data.
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    # --- Resource limits ----------------------------------------------------
+    # Conservative defaults for a small OIDC provider; raise if your user count
+    # or request rate is large. cpus is a fraction of one core in Compose v2.
+    mem_limit: 256m
+    cpus: 1.0
+    pids_limit: 256
+
+    # NOTE: 20476 is coupled to MYOAUTH_HTTP_ADDRESS; change both together.
+    # start_period 15s covers first boot (RSA-2048 key generation); /health is
+    # DB-aware and returns 503 when SQLite is unreachable.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:20476/health"]
+      interval: 30s
+      timeout: 3s
+      start_period: 15s
+      retries: 3

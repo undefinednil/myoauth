@@ -1,0 +1,12 @@
+frontend/node_modules/
+frontend/dist/
+web/dist/*
+!web/dist/.gitkeep
+*.log
+# Native build artifacts (never commit a stray build output).
+myoauth
+myoauth.exe
+private_key
+oauth.private.pem
+oauth.private.public.pem
+.env
