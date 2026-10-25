@@ -1,22 +1,22 @@
 {
   "httpAddress": "0.0.0.0:20476",
-  "allowedOrigins": ["http://localhost:5173", "http://localhost:3000"],
-  "secureCookies": false,
-  "oidcIssuer": "http://localhost:20476",
-  "oidcLoginUrl": "http://localhost:5173/login",
+  "allowedOrigins": [],
+  "secureCookies": true,
+  "oidcIssuer": "https://oauth.example.com",
+  "oidcLoginUrl": "https://oauth.example.com/login",
   "invitationCode": "demo",
-  "adminPassword": "$2a$12$nA.Br7mc//sjemVPW85q/eq5JT8d3Z42LkB18lb7.0M05fp3Pjj6m",
+  "adminPassword": "REPLACE_ME_WITH_A_BCRYPT_HASH",
   "authorizationCodeLength": 128,
   "refreshTokenLength": 128,
   "passwordMinLength": 8,
-  "dbPath": "demo.db",
-  "logFilePath": "my-oauth.log",
-  "rsaPrivateKeyPath": "demo",
+  "dbPath": "/data/myoauth.db",
+  "logFilePath": "/data/my-oauth.log",
+  "rsaPrivateKeyPath": "/config/oauth.private.pem",
   "rateLimitEnabled": true,
   "rateLimitRequestsPerMinute": 30,
   "rateLimitBurst": 10,
   "rateLimitMaxKeys": 100000,
-  "trustProxy": false,
+  "trustProxy": true,
   "forwardAuth": {
     "enabled": false,
     "clientId": "proxy",
@@ -30,6 +30,7 @@
     "callbackPath": "/oauth2/callback",
     "authPath": "/oauth2/auth",
     "signOutPath": "/oauth2/sign_out",
-    "allowedRedirectDomains": []
+    "allowedRedirectDomains": [],
+    "allowedCallbackOrigins": []
   }
 }

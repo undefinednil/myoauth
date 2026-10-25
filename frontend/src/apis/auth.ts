@@ -1,4 +1,4 @@
-import { type CommonResp, apiPost } from "./basic.ts";
+import { apiPost, type CommonResp } from "./basic.ts";
 
 export type LoginReq = {
   username: string;

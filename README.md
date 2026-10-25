@@ -1,68 +1,42 @@
 # MyOAuth
 
-Self-hosted OAuth2.0/OIDC provider, with PKCE support.
+Minimal OAuth 2.0/OIDC provider, OAuth 2.0 proxy.
 
-Note: This is the side-project of other side-projects, coding style is bad.
+Deployment is Docker-only: the supported way to run MyOAuth is `docker compose`
+(see [Docker](#docker)). There is no native-binary or systemd run path.
 
-## Setup
+## Development
 
-### Back End
-
-Copy `conf.example.json` to `conf.json` and edit it to configure the
-backend-related settings.
-
-Generate RSA keys (defaults to `conf.json` `rsaPrivateKeyPath` so it works
-without extra key-path configuration):
-
-```shell
-bash scripts/gen_keys.sh
-```
-
-Build and run (the frontend is embedded, see below):
-
-```shell
-make build
-./myoauth   # ./myoauth.exe on Windows
-```
-
-Point at a custom config file with the `-conf` flag or the `MYOAUTH_CONF`
-environment variable (flag wins over env, env wins over the default
-`./conf.json`):
-
-```shell
-./myoauth -conf /path/to/conf.json   # ./myoauth.exe on Windows
-MYOAUTH_CONF=/path/to/conf.json ./myoauth
-```
-
-### Front End
-
-The SPA is served same-origin from the Go binary: it calls the API at the same
+The SPA is served same-origin from the Go server: it calls the API at the same
 origin (`BASE` is `""` in production) and the server responds directly, so no
 backend URL needs to be configured. The `/api/*` prefix is used only in local
 development, where Vite proxies it to the backend (see below).
 
-The built frontend is embedded into the Go binary, so a normal `make build`
-builds the frontend (Vite output goes to `web/dist`) and compiles the server
-with the assets included. The frontend can still be built standalone:
+The built frontend is embedded into the Go server (see `web/embed.go`), so the
+container image ships a single self-contained binary. Build the SPA into
+`web/dist`, which is what `go:embed` picks up:
 
 ```shell
 npm --prefix frontend ci
 npm --prefix frontend run build
 ```
 
+Run the checks:
+
+```shell
+go build ./...
+go vet ./...
+go test ./... -count=1
+```
+
 For local development, run `npm --prefix frontend run dev`. Vite proxies
-`/api/*` to the backend; set `VITE_DEV_PROXY_TARGET` to change the proxy target
-(defaults to `http://localhost:20476`).
+`/api/*` to the backend, which defaults to `http://localhost:20476`. Override the
+target with the **shell environment variable** `VITE_DEV_PROXY_TARGET` (no env
+file is involved):
 
-### Makefile targets
-
-- `make web` – install frontend deps (if needed) and build into `web/dist`
-- `make build` – build the frontend, then `go build -o myoauth$(GOEXE) .`
-- `make test` – `go test ./...`
-- `make vet` – `go vet ./...`
-- `make docker` – build the container image (`myoauth:latest`)
-- `make compose-up` – `docker compose up -d --build`
-- `make compose-down` – `docker compose down`
+```shell
+VITE_DEV_PROXY_TARGET=http://127.0.0.1:9999 npm --prefix frontend run dev
+```
 
 ## Docker
 
@@ -73,24 +47,34 @@ container reads or writes must be owned by / writable to `100:101`. The SQLite
 database and log file live outside the image and must be mounted as a volume so
 data survives container upgrades.
 
-### Build and run with Compose
+The container publishes its port on the **loopback interface** only
+(`127.0.0.1:20476`), so it is not reachable from other hosts by default; put a
+reverse proxy (or the
+[forward-auth](#forward-auth-replaces-oauth2-proxy) setup) in front of it for
+external access.
 
-A ready-to-edit `docker-compose.yml` is provided:
+### First run with Docker Compose
+
+`docker-compose.yml` and a repo-root `.env.example` are provided. The whole
+configuration is a handful of `.env` values plus a one-time key generation:
 
 ```shell
-# 1. Create the config from the Docker-specific example, then edit it.
-cp conf.docker.example.json conf.json
+# 1. Create the env file from the example, then edit the values you need.
+cp .env.example .env
 
-# 2. Generate the RSA key (run via bash so it works on clones without +x).
+# 2. Create the config from the Docker-ready example, then edit it if needed.
+cp conf.example.json conf.json
+
+# 3. Generate the RSA key (run via bash so it works on clones without +x).
 bash scripts/gen_keys.sh oauth.private.pem
 
-# 3. Create the data dir and hand both it and the key to the container user.
+# 4. Create the data dir and hand both it and the key to the container user.
 mkdir -p data
 chown -R 100:101 data
 chown 100:101 oauth.private.pem && chmod 640 oauth.private.pem
 
-# 4. Start the stack.
-docker compose up -d --build            # or: make compose-up
+# 5. Start the stack.
+docker compose up -d --build
 ```
 
 The stack mounts (see `docker-compose.yml`):
@@ -99,17 +83,60 @@ The stack mounts (see `docker-compose.yml`):
 - `./conf.json:/config/conf.json:ro` – read-only configuration
 - `./oauth.private.pem:/config/oauth.private.pem:ro` – read-only RSA key
 
-The server listens on `http://localhost:20476`; a `HEALTHCHECK` polls `/health`.
+The server listens on `http://127.0.0.1:20476`; a `HEALTHCHECK` polls `/health`.
 The healthcheck port is coupled to `httpAddress` in `conf.json` — if you change
 one, change the other.
 
-#### Config values that must be set
+### Configuration: `.env` overrides
 
-- **`adminPassword`** – `conf.docker.example.json` ships with the literal
-  placeholder `REPLACE_ME_WITH_A_BCRYPT_HASH`, not a real hash. Replace it with
-  a bcrypt hash of your own strong password before starting; the server refuses
-  to start only on an *empty* value, so a placeholder would otherwise boot with
-  an unusable admin login. Generate a hash with one of:
+`conf.example.json` is Docker-ready: container paths, `secureCookies: true`,
+`trustProxy: true`, `allowedOrigins: []` and a disabled `forwardAuth` block are
+already set. The values that differ per deployment are supplied through `.env`,
+which `docker compose` loads into the container (see the `env_file` entry in
+`docker-compose.yml`; the file is optional). The optional `env_file` long syntax
+(`required: false`) needs **Docker Compose >= 2.24**; on older Compose drop the
+`env_file` block (or upgrade Compose).
+
+**Environment variables win over `conf.json`; an empty or unset variable leaves
+the JSON value untouched**, so you only set what you need to change. Supported
+variables (also listed, with notes, in `.env.example`):
+
+| Variable | Overrides |
+| --- | --- |
+| `MYOAUTH_HTTP_ADDRESS` | `httpAddress` |
+| `MYOAUTH_OIDC_ISSUER` | `oidcIssuer` |
+| `MYOAUTH_OIDC_LOGIN_URL` | `oidcLoginUrl` |
+| `MYOAUTH_INVITATION_CODE` | `invitationCode` |
+| `MYOAUTH_ADMIN_PASSWORD` | `adminPassword` (bcrypt hash) |
+| `MYOAUTH_SECURE_COOKIES` | `secureCookies` (bool) |
+| `MYOAUTH_TRUST_PROXY` | `trustProxy` (bool) |
+| `MYOAUTH_DB_PATH` | `dbPath` |
+| `MYOAUTH_LOG_FILE_PATH` | `logFilePath` |
+| `MYOAUTH_RSA_PRIVATE_KEY_PATH` | `rsaPrivateKeyPath` |
+| `MYOAUTH_ALLOWED_ORIGINS` | `allowedOrigins` (comma-separated) |
+| `MYOAUTH_PASSWORD_MIN_LENGTH` | `passwordMinLength` (int) |
+| `MYOAUTH_FORWARD_AUTH_ENABLED` | `forwardAuth.enabled` (bool) |
+| `MYOAUTH_FORWARD_AUTH_CLIENT_ID` | `forwardAuth.clientId` |
+| `MYOAUTH_FORWARD_AUTH_CLIENT_SECRET` | `forwardAuth.clientSecret` |
+| `MYOAUTH_FORWARD_AUTH_COOKIE_SECRET` | `forwardAuth.cookieSecret` |
+| `MYOAUTH_FORWARD_AUTH_COOKIE_NAME` | `forwardAuth.cookieName` |
+| `MYOAUTH_FORWARD_AUTH_COOKIE_DOMAIN` | `forwardAuth.cookieDomain` |
+| `MYOAUTH_FORWARD_AUTH_COOKIE_SECURE` | `forwardAuth.cookieSecure` (bool) |
+| `MYOAUTH_FORWARD_AUTH_ALLOWED_CALLBACK_ORIGINS` | `forwardAuth.allowedCallbackOrigins` (comma-separated) |
+| `MYOAUTH_FORWARD_AUTH_ALLOWED_REDIRECT_DOMAINS` | `forwardAuth.allowedRedirectDomains` (comma-separated) |
+
+Boolean variables accept `true/false/1/0/yes/no` case-insensitively; a malformed
+value aborts the boot with a clear error.
+
+The minimal edit for a typical deployment is `.env`:
+
+- **`MYOAUTH_OIDC_ISSUER`** – public issuer URL used in discovery / the JWT
+  `iss` claim, and the default forward-auth origin.
+- **`MYOAUTH_OIDC_LOGIN_URL`** – hosted login page URL used by `/authorize`.
+- **`MYOAUTH_ADMIN_PASSWORD`** – a **bcrypt hash**, not plaintext. `conf.json`
+  ships with the literal placeholder `REPLACE_ME_WITH_A_BCRYPT_HASH`; the server
+  only refuses an *empty* value, so replace it (or set this variable) before
+  starting. Generate a hash with one of:
 
   ```shell
   # htpasswd (from apache2-utils / httpd-tools), cost 12:
@@ -137,39 +164,20 @@ one, change the other.
   go run /tmp/bcrypt.go 'YourStrongPassword'
   ```
 
-- **`secureCookies`** – must be set to `true` whenever the server is served over
-  HTTPS (the example ships `false` because it assumes local HTTP; with the
-  HTTPS `oidcIssuer` placeholder, leaving it `false` would send session cookies
-  without the `Secure` flag).
+- **`MYOAUTH_INVITATION_CODE`** – change the placeholder before going live.
+
+`conf.example.json` already sets `secureCookies: true` (correct whenever the
+server is served over HTTPS) and points `dbPath`/`logFilePath` under `/data` and
+`rsaPrivateKeyPath` at `/config/oauth.private.pem`. No secrets are baked into the
+image; the config and keys are supplied at runtime.
 
 To use a different config path, override `command:` in `docker-compose.yml`. The
 image's default `CMD` passes `-conf /config/conf.json`, and that flag takes
 precedence over the optional `MYOAUTH_CONF` environment variable (see
 `main.go`), so setting `MYOAUTH_CONF` alone has no effect.
 
-### Build and run manually
-
-```shell
-docker build -t myoauth:latest .
-docker run --rm -p 20476:20476 \
-  -v "$PWD/data:/data" \
-  -v "$PWD/conf.json:/config/conf.json:ro" \
-  -v "$PWD/oauth.private.pem:/config/oauth.private.pem:ro" \
-  myoauth:latest
-```
-
-The container's config must reference the mounted paths (`conf.docker.example.json`
-already does): `dbPath` `/data/myoauth.db`, `logFilePath` `/data/my-oauth.log`,
-`rsaPrivateKeyPath` `/config/oauth.private.pem`, and `httpAddress`
-`0.0.0.0:20476`. No secrets are baked into the image; keys and `conf.json` are
-supplied at runtime. The same ownership steps as the Compose section apply:
-`chown -R 100:101 data` and `chown 100:101 oauth.private.pem && chmod 640
-oauth.private.pem` (the key must be readable and `data/` writable by uid 100 /
-gid 101).
-
-## Screenshot
-
-![screenshot](./screenshot.png)
+> Building the image directly (`docker build -t myoauth:latest .`) also works,
+> but Compose is the supported deployment path.
 
 ## OIDC Endpoints
 
@@ -250,8 +258,54 @@ This is the second supported nginx deployment (the first is serving the OIDC
 provider/SPA itself); see `nginx.forward-auth.example.conf` for a complete,
 hardened location block.
 
-Enable it with the `forwardAuth` object in `conf.json` (disabled by default, so
-existing configs keep working unchanged):
+### Host-aware flow (cross-host deployments)
+
+The `/oauth2/*` endpoints are **host-aware**. By default (no
+`allowedCallbackOrigins`) the single-host deployment is preserved and the
+callback URI is the issuer origin. When `allowedCallbackOrigins` is set, the
+protected app may live on a *different* host than the issuer (e.g. app
+`nas.example.com`, issuer `auth.example.com`): nginx on the app host proxies
+`/oauth2/*` to this service, and `/oauth2/start`, `/oauth2/callback` and the
+session all live on the **app's own origin**.
+
+- `/oauth2/start` derives the request origin from `X-Forwarded-Host` (falling
+  back to `Host`) and `X-Forwarded-Proto` (falling back to the connection's
+  scheme). If that origin is not in `allowedCallbackOrigins` it responds
+  `400 invalid_request` — there is no silent fallback, so a misconfigured host
+  is obvious. A spoofed header can only select another allowlisted origin, so
+  it cannot create an open redirect.
+- The chosen `redirect_uri` (`<origin><callbackPath>`) is stored in the state
+  cookie and reused verbatim by `/oauth2/callback`, so no scheme/host
+  re-derivation can drift between the two requests.
+- Because the OAuth dance stays on the app host, the session cookie is
+  **host-only** (no `Domain`), so a `__Host-`-prefixed `cookieName` works and a
+  **relative** `rd` is all you need. `cookieDomain` remains an opt-in override
+  for shared-domain setups.
+- The managed proxy client's allowed redirects are unioned with
+  `<origin><callbackPath>` for every effective origin (existing/manually-added
+  redirects and the client's secret/ages are never changed).
+
+Relative `rd` is the recommended path for cross-host; `safeReturnURL` and
+`allowedRedirectDomains` still govern absolute `rd` URLs.
+
+> **Fail-closed upgrade note.** Enabling the host-aware flow makes
+> `/oauth2/start` require the derived request origin to **exactly** match an
+> effective origin — `allowedCallbackOrigins` when set, otherwise the
+> **issuer origin** (`oidcIssuer`) by default. A reverse proxy that forwards a
+> `Host`/`X-Forwarded-Host` different from `oidcIssuer`, without listing that
+> origin in `allowedCallbackOrigins`, will now receive a `400 invalid_request`
+> (previously the callback URI was simply the issuer origin). This is an
+> intentional security change: configure `allowedCallbackOrigins` with the app
+> origin(s), or align the forwarded `Host` with `oidcIssuer`.
+
+Enable it from `.env`: set `MYOAUTH_FORWARD_AUTH_ENABLED=true` together with the
+required secrets (`MYOAUTH_FORWARD_AUTH_CLIENT_SECRET` and a
+`MYOAUTH_FORWARD_AUTH_COOKIE_SECRET` of at least 32 characters). The shipped
+`.env.example` leaves `MYOAUTH_FORWARD_AUTH_ENABLED` **commented out** so the
+file never silently overrides `conf.json`. When you are **not** using `.env`,
+enable the feature by setting the `forwardAuth` object in `conf.json` instead.
+Either way the feature is disabled by default, so existing configs keep working
+unchanged:
 
 | Field | Default | Meaning |
 | --- | --- | --- |
@@ -260,14 +314,15 @@ existing configs keep working unchanged):
 | `clientSecret` | – | **Required** when enabled. Secret for the proxy client. |
 | `cookieSecret` | – | **Required** and at least 32 characters when enabled. Derives the AES-256-GCM key for the short-lived encrypted **state** cookie (`/oauth2/start` → `/oauth2/callback` CSRF + PKCE). Generate with `openssl rand -hex 32`. |
 | `cookieName` | `"_myoauth_proxy"` | Session cookie name (carries only the opaque session id). The short-lived state cookie is `<cookieName>_state`. |
-| `cookieDomain` | `""` | Optional cookie `Domain` attribute. |
-| `cookieSecure` | `false` | Sets `Secure` on the cookies; enable it when serving over HTTPS. |
+| `cookieDomain` | `""` | Optional cookie `Domain` attribute (opt-in override for shared-domain setups). Leave empty for **host-only** cookies, which is required for a `__Host-` cookieName. |
+| `cookieSecure` | `false` | Sets `Secure` on the cookies. **Required (set `true`) whenever the flow is served over HTTPS** — without it the session/state cookies are sent over plain HTTP too. |
 | `sessionTtlSeconds` | `0` | Session lifetime. `0` derives it from the proxy client's refresh-token age. |
 | `loginPath` | `"/oauth2/start"` | Starts the login flow (`rd` = return URL). |
-| `callbackPath` | `"/oauth2/callback"` | OIDC redirect URI; also registered as the proxy client's allowed redirect. |
+| `callbackPath` | `"/oauth2/callback"` | OIDC redirect URI suffix; `<origin><callbackPath>` is registered as an allowed redirect on the proxy client for every effective origin. |
 | `authPath` | `"/oauth2/auth"` | `auth_request` subrequest target (GET/HEAD). |
 | `signOutPath` | `"/oauth2/sign_out"` | Clears the session and redirects to a validated `rd`. |
 | `allowedRedirectDomains` | `[]` | Extra hosts accepted for an absolute `rd` return URL. `rd` may always be a relative path (e.g. `/app`); anything else falls back to `/`. |
+| `allowedCallbackOrigins` | `[]` | Exact origins (`scheme://host[:port]`, e.g. `"https://nas.example.com"`) allowed to run the login flow. Each origin's `<origin><callbackPath>` becomes an allowed redirect on the proxy client. Empty preserves the single-host default (the issuer origin). Malformed entries fail the boot. |
 
 All `/oauth2/*` subpaths other than the configured endpoints return a JSON 404,
 so the reserved namespace never falls through to the SPA.
@@ -280,7 +335,10 @@ against `allowedRedirectDomains`, userinfo rejected, control characters and
 percent-encoded path separators rejected in relative paths). Usernames
 containing control characters are rejected at registration, and header values
 are sanitized before they are returned. Client-supplied `X-Forwarded-*` headers
-are never trusted for identity.
+are never trusted for identity. `X-Forwarded-Host`/`X-Forwarded-Proto` are only
+used to derive the request origin, which must match `allowedCallbackOrigins`
+(or the issuer origin in the single-host default), so they cannot introduce an
+open redirect.
 
 **Header authorization:** upstreams must authorize on `X-Auth-Request-User`, the
 immutable user UUID. `X-Auth-Request-Preferred-Username` is a mutable display
@@ -290,7 +348,3 @@ other `X-Auth-Request-*` header so clients cannot spoof identity.
 If the forward-auth feature is enabled but its cookie codec cannot be built, the
 server refuses to start rather than silently disabling the protection. The bare
 `/oauth2` path returns a JSON 404 instead of redirecting to `/oauth2/`.
-
-## Usage
-
-Recommend using `sdks`.

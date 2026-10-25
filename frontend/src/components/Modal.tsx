@@ -90,8 +90,20 @@ export function Modal({
       }
     }
 
+    // Close when the backdrop (the overlay, not the dialog or its content) is
+    // pressed. Registered imperatively so the decorative overlay stays a
+    // non-interactive element for assistive technologies.
+    const overlay = dialogRef.current?.parentElement ?? null;
+    function onMouseDown(event: MouseEvent) {
+      if (event.target === overlay) {
+        onCloseRef.current();
+      }
+    }
+    overlay?.addEventListener("mousedown", onMouseDown);
+
     document.addEventListener("keydown", onKeyDown, true);
     return () => {
+      overlay?.removeEventListener("mousedown", onMouseDown);
       document.removeEventListener("keydown", onKeyDown, true);
       document.body.style.overflow = previousOverflow;
       previouslyFocused?.focus();
@@ -103,14 +115,7 @@ export function Modal({
   }
 
   return createPortal(
-    <div
-      className="modal-overlay"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) {
-          onClose();
-        }
-      }}
-    >
+    <div className="modal-overlay">
       <dialog
         ref={dialogRef}
         className={`modal modal-${size}`}

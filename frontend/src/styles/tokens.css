@@ -1,10 +1,11 @@
 :root {
   color-scheme: light;
 
-  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial,
-    sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
-    "Liberation Mono", monospace;
+  --font-sans:
+    system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono",
+    monospace;
 
   --text-xs: 0.75rem;
   --text-sm: 0.875rem;
@@ -40,11 +41,9 @@
   --shadow-lg: 0 24px 48px rgba(15, 23, 42, 0.18);
 
   --bg: #f5f7fb;
-  --bg-gradient: radial-gradient(
-      1200px 600px at 8% -10%,
-      #e6efff 0%,
-      transparent 60%
-    ), radial-gradient(900px 500px at 108% 0%, #eef2ff 0%, transparent 55%);
+  --bg-gradient:
+    radial-gradient(1200px 600px at 8% -10%, #e6efff 0%, transparent 60%),
+    radial-gradient(900px 500px at 108% 0%, #eef2ff 0%, transparent 55%);
   --surface: #ffffff;
   --surface-muted: #f1f4f9;
   --surface-hover: #eef2f8;
@@ -86,11 +85,9 @@
   --shadow-lg: 0 24px 48px rgba(0, 0, 0, 0.55);
 
   --bg: #0b1120;
-  --bg-gradient: radial-gradient(
-      1200px 600px at 8% -10%,
-      #16233f 0%,
-      transparent 60%
-    ), radial-gradient(900px 500px at 108% 0%, #1a2244 0%, transparent 55%);
+  --bg-gradient:
+    radial-gradient(1200px 600px at 8% -10%, #16233f 0%, transparent 60%),
+    radial-gradient(900px 500px at 108% 0%, #1a2244 0%, transparent 55%);
   --surface: #131c2e;
   --surface-muted: #1a2438;
   --surface-hover: #1e2a40;
@@ -133,11 +130,9 @@
     --shadow-lg: 0 24px 48px rgba(0, 0, 0, 0.55);
 
     --bg: #0b1120;
-    --bg-gradient: radial-gradient(
-        1200px 600px at 8% -10%,
-        #16233f 0%,
-        transparent 60%
-      ), radial-gradient(900px 500px at 108% 0%, #1a2244 0%, transparent 55%);
+    --bg-gradient:
+      radial-gradient(1200px 600px at 8% -10%, #16233f 0%, transparent 60%),
+      radial-gradient(900px 500px at 108% 0%, #1a2244 0%, transparent 55%);
     --surface: #131c2e;
     --surface-muted: #1a2438;
     --surface-hover: #1e2a40;

@@ -24,7 +24,6 @@ data/
 
 # Secrets and local config
 .env
-frontend/.env
 conf.json
 conf-local.json
 **/*.pem

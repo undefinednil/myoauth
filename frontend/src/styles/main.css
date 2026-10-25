@@ -174,8 +174,11 @@
   cursor: pointer;
   white-space: nowrap;
   user-select: none;
-  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s
-    ease, transform 0.05s ease;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease,
+    transform 0.05s ease;
 }
 
 .btn:disabled {
@@ -267,7 +270,9 @@
   background: var(--surface);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
 .field-input::placeholder {

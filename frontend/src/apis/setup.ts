@@ -1,4 +1,4 @@
-import { type CommonResp, apiDelete, apiGet, apiPost } from "./basic.ts";
+import { apiDelete, apiGet, apiPost, type CommonResp } from "./basic.ts";
 
 export type Client = {
   id: number;

@@ -3,7 +3,10 @@ package util
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -46,6 +49,15 @@ type ForwardAuthConfig struct {
 	AuthPath               string   `json:"authPath"`
 	SignOutPath            string   `json:"signOutPath"`
 	AllowedRedirectDomains []string `json:"allowedRedirectDomains"`
+	// AllowedCallbackOrigins lists the exact origins (scheme + host[:port],
+	// e.g. "https://nas.example.com") of the protected applications whose host
+	// may complete the forward-auth login flow. This makes `/oauth2/*`
+	// host-aware: the login/callback/session all live on the app's own origin,
+	// so a `__Host-`-prefixed cookieName works and a relative `rd` needs no
+	// cookieDomain. Each origin's `<origin><callbackPath>` is registered as an
+	// allowed redirect_uri on the managed proxy client. When empty, the issuer
+	// origin is used, preserving the single-host deployment.
+	AllowedCallbackOrigins []string `json:"allowedCallbackOrigins"`
 }
 
 func (c *Configuration) Init(path string) error {
@@ -54,6 +66,12 @@ func (c *Configuration) Init(path string) error {
 		return err
 	}
 	if err := json.Unmarshal(confJson, &c); err != nil {
+		return err
+	}
+	// Environment variables win over the JSON file; an unset or empty variable
+	// leaves the JSON value untouched. Applied before validation/defaults so the
+	// usual checks run on the effective values.
+	if err := c.applyEnvOverrides(); err != nil {
 		return err
 	}
 	if strings.TrimSpace(c.OidcIssuer) == "" {
@@ -125,11 +143,224 @@ func (c *Configuration) validateForwardAuth() error {
 	if len(fa.CookieSecret) < 32 {
 		return errors.New("forwardAuth.cookieSecret must be at least 32 characters")
 	}
+	// Normalise and validate allowedCallbackOrigins so a malformed entry fails
+	// fast at boot rather than producing a broken redirect_uri at request time.
+	for i, raw := range fa.AllowedCallbackOrigins {
+		origin, err := normalizeCallbackOrigin(raw)
+		if err != nil {
+			return err
+		}
+		fa.AllowedCallbackOrigins[i] = origin
+	}
 	return nil
+}
+
+// normalizeCallbackOrigin trims an allowedCallbackOrigins entry, verifies it is
+// a bare origin (http/https scheme plus a non-empty host and optional port, no
+// userinfo, path, query or fragment) and returns it with any trailing slash
+// removed so `<origin><callbackPath>` never doubles the separator.
+func normalizeCallbackOrigin(raw string) (string, error) {
+	entry := strings.TrimSpace(raw)
+	if entry == "" {
+		return "", errors.New("forwardAuth.allowedCallbackOrigins entries must not be empty")
+	}
+	u, err := url.Parse(entry)
+	if err != nil {
+		return "", fmt.Errorf("forwardAuth.allowedCallbackOrigins entry %q is not a valid origin: %w", entry, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("forwardAuth.allowedCallbackOrigins entry %q must use the http or https scheme", entry)
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("forwardAuth.allowedCallbackOrigins entry %q must include a host", entry)
+	}
+	if u.User != nil {
+		return "", fmt.Errorf("forwardAuth.allowedCallbackOrigins entry %q must not contain userinfo", entry)
+	}
+	if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("forwardAuth.allowedCallbackOrigins entry %q must be a bare origin (no path, query or fragment)", entry)
+	}
+	// Reject host spellings that would break the comma-joined redirect CSV or
+	// parse ambiguously: a comma would split one entry into two, and a
+	// backslash/userinfo/path/query marker or whitespace has no business in a
+	// host and could smuggle a different authority. Bracketed IPv6 (`[::1]`,
+	// optionally with a port) contains none of these and is still accepted.
+	if strings.ContainsAny(u.Host, ",\\@?#/") || strings.ContainsAny(u.Host, " \t\r\n\v\f") {
+		return "", fmt.Errorf("forwardAuth.allowedCallbackOrigins entry %q contains an invalid character in its host", entry)
+	}
+	// A trailing dot ("nas.example.com.") is a distinct, ambiguous spelling of
+	// an otherwise identical host; reject it so the allowlist cannot be dodged
+	// by a host that compares differently.
+	if strings.HasSuffix(u.Hostname(), ".") {
+		return "", fmt.Errorf("forwardAuth.allowedCallbackOrigins entry %q must not have a trailing dot in its host", entry)
+	}
+	return u.Scheme + "://" + u.Host, nil
 }
 
 // RateLimitingEnabled reports whether the request rate limiter is active. A
 // missing config value defaults to enabled.
 func (c *Configuration) RateLimitingEnabled() bool {
 	return c.RateLimitEnabled == nil || *c.RateLimitEnabled
+}
+
+// envString returns the value of an environment variable and true when it is set
+// and not blank. A blank value is treated as "unset" so a stray empty `.env`
+// entry cannot wipe out a JSON value.
+func envString(key string) (string, bool) {
+	value, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(value) == "" {
+		return "", false
+	}
+	return value, true
+}
+
+// parseEnvBool accepts true/false/1/0/yes/no case-insensitively. A malformed
+// value fails fast rather than being silently ignored.
+func parseEnvBool(value string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "true", "1", "yes":
+		return true, nil
+	case "false", "0", "no":
+		return false, nil
+	default:
+		return false, fmt.Errorf("invalid boolean value %q (want true/false/1/0/yes/no)", value)
+	}
+}
+
+// splitEnvCSV splits a comma-separated override into trimmed, non-empty entries.
+func splitEnvCSV(value string) []string {
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+// forwardAuthEnvKeys are the MYOAUTH_FORWARD_AUTH_* variables that, when any one
+// is set, require the ForwardAuth struct to exist so the override can be applied
+// (a minimal conf.json without a forwardAuth block still works).
+var forwardAuthEnvKeys = []string{
+	"MYOAUTH_FORWARD_AUTH_ENABLED",
+	"MYOAUTH_FORWARD_AUTH_CLIENT_ID",
+	"MYOAUTH_FORWARD_AUTH_CLIENT_SECRET",
+	"MYOAUTH_FORWARD_AUTH_COOKIE_SECRET",
+	"MYOAUTH_FORWARD_AUTH_COOKIE_NAME",
+	"MYOAUTH_FORWARD_AUTH_COOKIE_DOMAIN",
+	"MYOAUTH_FORWARD_AUTH_COOKIE_SECURE",
+	"MYOAUTH_FORWARD_AUTH_ALLOWED_CALLBACK_ORIGINS",
+	"MYOAUTH_FORWARD_AUTH_ALLOWED_REDIRECT_DOMAINS",
+}
+
+// applyEnvOverrides layers MYOAUTH_* environment variables on top of the parsed
+// JSON configuration. It is intentionally separate from validation/defaults so
+// the existing checks still run afterwards on the effective values.
+func (c *Configuration) applyEnvOverrides() error {
+	if v, ok := envString("MYOAUTH_HTTP_ADDRESS"); ok {
+		c.HttpAddress = v
+	}
+	if v, ok := envString("MYOAUTH_OIDC_ISSUER"); ok {
+		c.OidcIssuer = v
+	}
+	if v, ok := envString("MYOAUTH_OIDC_LOGIN_URL"); ok {
+		c.OidcLoginUrl = v
+	}
+	if v, ok := envString("MYOAUTH_INVITATION_CODE"); ok {
+		c.InvitationCode = v
+	}
+	if v, ok := envString("MYOAUTH_ADMIN_PASSWORD"); ok {
+		c.AdminPassword = v
+	}
+	if v, ok := envString("MYOAUTH_DB_PATH"); ok {
+		c.DbPath = v
+	}
+	if v, ok := envString("MYOAUTH_LOG_FILE_PATH"); ok {
+		c.LogFilePath = v
+	}
+	if v, ok := envString("MYOAUTH_RSA_PRIVATE_KEY_PATH"); ok {
+		c.RsaPrivateKeyPath = v
+	}
+	if v, ok := envString("MYOAUTH_ALLOWED_ORIGINS"); ok {
+		c.AllowedOrigins = splitEnvCSV(v)
+	}
+	if v, ok := envString("MYOAUTH_SECURE_COOKIES"); ok {
+		b, err := parseEnvBool(v)
+		if err != nil {
+			return fmt.Errorf("MYOAUTH_SECURE_COOKIES: %w", err)
+		}
+		c.SecureCookies = b
+	}
+	if v, ok := envString("MYOAUTH_TRUST_PROXY"); ok {
+		b, err := parseEnvBool(v)
+		if err != nil {
+			return fmt.Errorf("MYOAUTH_TRUST_PROXY: %w", err)
+		}
+		c.TrustProxy = b
+	}
+	if v, ok := envString("MYOAUTH_PASSWORD_MIN_LENGTH"); ok {
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil {
+			return fmt.Errorf("MYOAUTH_PASSWORD_MIN_LENGTH: invalid integer %q", v)
+		}
+		c.PasswordMinLength = n
+	}
+	return c.applyForwardAuthEnvOverrides()
+}
+
+// applyForwardAuthEnvOverrides applies MYOAUTH_FORWARD_AUTH_* overrides, creating
+// the ForwardAuth struct first when any of those variables is set and the JSON
+// file did not provide one.
+func (c *Configuration) applyForwardAuthEnvOverrides() error {
+	anySet := false
+	for _, key := range forwardAuthEnvKeys {
+		if _, ok := envString(key); ok {
+			anySet = true
+			break
+		}
+	}
+	if !anySet {
+		return nil
+	}
+	if c.ForwardAuth == nil {
+		c.ForwardAuth = &ForwardAuthConfig{}
+	}
+	fa := c.ForwardAuth
+	if v, ok := envString("MYOAUTH_FORWARD_AUTH_ENABLED"); ok {
+		b, err := parseEnvBool(v)
+		if err != nil {
+			return fmt.Errorf("MYOAUTH_FORWARD_AUTH_ENABLED: %w", err)
+		}
+		fa.Enabled = b
+	}
+	if v, ok := envString("MYOAUTH_FORWARD_AUTH_CLIENT_ID"); ok {
+		fa.ClientId = v
+	}
+	if v, ok := envString("MYOAUTH_FORWARD_AUTH_CLIENT_SECRET"); ok {
+		fa.ClientSecret = v
+	}
+	if v, ok := envString("MYOAUTH_FORWARD_AUTH_COOKIE_SECRET"); ok {
+		fa.CookieSecret = v
+	}
+	if v, ok := envString("MYOAUTH_FORWARD_AUTH_COOKIE_NAME"); ok {
+		fa.CookieName = v
+	}
+	if v, ok := envString("MYOAUTH_FORWARD_AUTH_COOKIE_DOMAIN"); ok {
+		fa.CookieDomain = v
+	}
+	if v, ok := envString("MYOAUTH_FORWARD_AUTH_COOKIE_SECURE"); ok {
+		b, err := parseEnvBool(v)
+		if err != nil {
+			return fmt.Errorf("MYOAUTH_FORWARD_AUTH_COOKIE_SECURE: %w", err)
+		}
+		fa.CookieSecure = b
+	}
+	if v, ok := envString("MYOAUTH_FORWARD_AUTH_ALLOWED_CALLBACK_ORIGINS"); ok {
+		fa.AllowedCallbackOrigins = splitEnvCSV(v)
+	}
+	if v, ok := envString("MYOAUTH_FORWARD_AUTH_ALLOWED_REDIRECT_DOMAINS"); ok {
+		fa.AllowedRedirectDomains = splitEnvCSV(v)
+	}
+	return nil
 }

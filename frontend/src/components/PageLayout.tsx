@@ -1,5 +1,5 @@
 import { type ReactNode, useState } from "react";
-import { type Theme, getStoredTheme, setTheme } from "../theme.ts";
+import { getStoredTheme, setTheme, type Theme } from "../theme.ts";
 
 const THEME_OPTIONS: { value: Theme; label: string }[] = [
   { value: "system", label: "Auto" },

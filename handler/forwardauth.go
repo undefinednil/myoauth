@@ -39,6 +39,9 @@ type forwardAuthState struct {
 	State        string `json:"state"`
 	CodeVerifier string `json:"codeVerifier"`
 	Rd           string `json:"rd"`
+	// RedirectUri is the exact redirect_uri sent to /authorize; the callback
+	// reuses it verbatim so no scheme/host re-derivation can drift.
+	RedirectUri string `json:"redirectUri"`
 }
 
 // forwardAuthSessionLock serialises concurrent auth subrequests that share a
@@ -90,43 +93,103 @@ func (s *forwardAuthSessions) release(sessionID string, lock *forwardAuthSession
 }
 
 // EnsureForwardAuthClient creates the proxy's OIDC client on startup if it does
-// not exist yet, so the flow works without manual admin setup. It never
-// overwrites an existing client.
+// not exist yet, and otherwise makes sure its allowed redirects include the
+// callback URI of every effective origin. Manually-added redirects and the
+// existing secret/ages are preserved.
 func (h *Handler) EnsureForwardAuthClient() error {
 	fa := h.conf.ForwardAuth
 	if fa == nil || !fa.Enabled {
 		return nil
 	}
+	desired := h.forwardAuthRedirectURIs()
 	existing, err := h.db.Clients.SelectByClientId(fa.ClientId)
 	if err != nil {
 		return err
 	}
 	if existing != nil {
-		h.logger.Printf("forward auth: client %q already exists (id=%d), leaving it unchanged\n", fa.ClientId, existing.Id)
+		merged := mergeForwardAuthRedirects(existing.Redirects, desired)
+		if merged == existing.Redirects {
+			h.logger.Printf("forward auth: client %q already exists (id=%d) with redirects %q\n", fa.ClientId, existing.Id, existing.Redirects)
+			return nil
+		}
+		// Only the redirects change; the secret and token ages of an existing
+		// client are never touched.
+		existing.Redirects = merged
+		if err := h.db.Clients.UpdateById(existing); err != nil {
+			return err
+		}
+		h.logger.Printf("forward auth: client %q (id=%d) redirects updated to %q\n", fa.ClientId, existing.Id, merged)
 		return nil
 	}
 	hashed, err := util.BCryptPassword(fa.ClientSecret)
 	if err != nil {
 		return err
 	}
+	redirects := strings.Join(desired, ",")
 	client := &dal.Client{
 		ClientId:        fa.ClientId,
 		Secret:          hashed,
-		Redirects:       h.forwardAuthRedirectURI(),
+		Redirects:       redirects,
 		AccessTokenAge:  forwardAuthAccessTokenAge,
 		RefreshTokenAge: forwardAuthRefreshTokenAge,
 	}
 	if err := h.db.Clients.Insert(client); err != nil {
 		return err
 	}
-	h.logger.Printf("forward auth: created client %q with redirect_uri %q\n", client.ClientId, client.Redirects)
+	h.logger.Printf("forward auth: created client %q with redirects %q\n", client.ClientId, redirects)
 	return nil
 }
 
-// forwardAuthLogin starts the login flow: it validates the return URL, mints
-// state + PKCE, stashes them in an encrypted cookie and redirects to /authorize.
+// mergeForwardAuthRedirects unions the comma-separated existing redirects with
+// the desired ones, preserving first-seen order and dropping duplicates. It
+// never removes a redirect that was added manually.
+func mergeForwardAuthRedirects(existingCSV string, desired []string) string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(desired)+1)
+	add := func(redirect string) {
+		redirect = strings.TrimSpace(redirect)
+		if redirect == "" {
+			return
+		}
+		if _, ok := seen[redirect]; ok {
+			return
+		}
+		seen[redirect] = struct{}{}
+		out = append(out, redirect)
+	}
+	for _, redirect := range strings.Split(existingCSV, ",") {
+		add(redirect)
+	}
+	for _, redirect := range desired {
+		add(redirect)
+	}
+	return strings.Join(out, ",")
+}
+
+// forwardAuthLogin starts the login flow: it derives the requesting origin,
+// rejects one that is not on the allowlist, validates the return URL, mints
+// state + PKCE, stashes them (including the exact redirect_uri) in an encrypted
+// cookie and redirects to /authorize.
+//
+// Fail-closed: the derived request origin must exactly match an effective
+// origin (allowedCallbackOrigins, or the issuer origin when unset). A reverse
+// proxy that forwards a Host/X-Forwarded-Host different from oidcIssuer -- and
+// without listing that origin in allowedCallbackOrigins -- will therefore get a
+// 400 here. That is intentional: configure allowedCallbackOrigins (or align the
+// forwarded Host with oidcIssuer) to enable the host-aware flow.
 func (h Handler) forwardAuthLogin(w http.ResponseWriter, r *http.Request) {
 	fa := h.conf.ForwardAuth
+
+	// The login/callback/session must all live on the protected app's own
+	// origin so the session cookie is host-only (and `__Host-` works). A
+	// spoofed X-Forwarded-Host can only select another allowlisted origin, so
+	// it cannot cause an open redirect.
+	origin := h.forwardAuthCanonicalOrigin(forwardAuthRequestOrigin(r))
+	if origin == "" {
+		responseOIDCError(w, http.StatusBadRequest, "invalid_request", "request origin is not an allowed callback origin")
+		return
+	}
+	redirectURI := h.forwardAuthCallbackURI(origin)
 
 	rd := h.safeReturnURL(r.URL.Query().Get("rd"))
 
@@ -143,7 +206,7 @@ func (h Handler) forwardAuthLogin(w http.ResponseWriter, r *http.Request) {
 	sum := sha256.Sum256([]byte(codeVerifier))
 	codeChallenge := base64.RawURLEncoding.EncodeToString(sum[:])
 
-	encodedState, err := h.faCodec.Encode(forwardAuthState{State: state, CodeVerifier: codeVerifier, Rd: rd})
+	encodedState, err := h.faCodec.Encode(forwardAuthState{State: state, CodeVerifier: codeVerifier, Rd: rd, RedirectUri: redirectURI})
 	if err != nil {
 		responseInternalError(w, h.logger, err)
 		return
@@ -157,7 +220,7 @@ func (h Handler) forwardAuthLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	query := authorize.Query()
 	query.Set("client_id", fa.ClientId)
-	query.Set("redirect_uri", h.forwardAuthRedirectURI())
+	query.Set("redirect_uri", redirectURI)
 	query.Set("response_type", "code")
 	query.Set("scope", "openid profile")
 	query.Set("state", state)
@@ -205,7 +268,7 @@ func (h Handler) forwardAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, _, err := h.exchangeAuthorizationCode(client, code, st.CodeVerifier, h.forwardAuthRedirectURI())
+	resp, _, err := h.exchangeAuthorizationCode(client, code, st.CodeVerifier, st.RedirectUri)
 	if err != nil {
 		h.respondTokenExchangeError(w, err)
 		return
@@ -358,8 +421,92 @@ func sanitizeAuthHeader(value string) string {
 	}, value)
 }
 
-func (h Handler) forwardAuthRedirectURI() string {
-	return h.oidcIssuer() + h.conf.ForwardAuth.CallbackPath
+// effectiveForwardAuthOrigins returns the origins allowed to run the
+// forward-auth flow. When allowedCallbackOrigins is configured it wins;
+// otherwise the issuer origin is used, preserving the single-host deployment.
+func (h Handler) effectiveForwardAuthOrigins() []string {
+	fa := h.conf.ForwardAuth
+	if fa == nil {
+		return nil
+	}
+	origins := make([]string, 0, len(fa.AllowedCallbackOrigins))
+	for _, origin := range fa.AllowedCallbackOrigins {
+		if origin = strings.TrimSpace(origin); origin != "" {
+			origins = append(origins, origin)
+		}
+	}
+	if len(origins) == 0 {
+		return []string{h.oidcIssuer()}
+	}
+	return origins
+}
+
+// forwardAuthRedirectURIs is the callback URI of every effective origin, i.e.
+// what must appear on the managed proxy client's allowed redirects.
+func (h Handler) forwardAuthRedirectURIs() []string {
+	origins := h.effectiveForwardAuthOrigins()
+	uris := make([]string, 0, len(origins))
+	for _, origin := range origins {
+		uris = append(uris, h.forwardAuthCallbackURI(origin))
+	}
+	return uris
+}
+
+// forwardAuthCallbackURI builds the callback redirect_uri for an origin.
+func (h Handler) forwardAuthCallbackURI(origin string) string {
+	return origin + h.conf.ForwardAuth.CallbackPath
+}
+
+// forwardAuthCanonicalOrigin returns the allowlisted origin that matches origin
+// case-insensitively, or "" when it is not allowed. Returning the allowlisted
+// spelling keeps the redirect_uri byte-identical to the client's registered
+// redirect (which /authorize matches exactly).
+func (h Handler) forwardAuthCanonicalOrigin(origin string) string {
+	origin = strings.TrimSpace(origin)
+	if origin == "" {
+		return ""
+	}
+	for _, allowed := range h.effectiveForwardAuthOrigins() {
+		if strings.EqualFold(allowed, origin) {
+			return allowed
+		}
+	}
+	return ""
+}
+
+// forwardAuthRequestOrigin derives the origin (scheme://host) of the incoming
+// request. The `/oauth2/*` endpoints only ever run behind the operator's
+// reverse proxy, whose config must set X-Forwarded-Host and X-Forwarded-Proto
+// (the shipped nginx.forward-auth.example.conf does, pinning both to $host /
+// $scheme so a client cannot inject them); the `Host`/`r.TLS` fallbacks exist
+// only for direct/local requests. Because the derived origin must exactly match
+// an allowlisted origin, a spoofed header cannot create an open redirect.
+func forwardAuthRequestOrigin(r *http.Request) string {
+	host := firstHeaderValue(r.Header.Get("X-Forwarded-Host"))
+	if host == "" {
+		host = strings.TrimSpace(r.Host)
+	}
+	scheme := firstHeaderValue(r.Header.Get("X-Forwarded-Proto"))
+	if scheme == "" {
+		if r.TLS != nil {
+			scheme = "https"
+		} else {
+			scheme = "http"
+		}
+	}
+	if host == "" {
+		return ""
+	}
+	return scheme + "://" + host
+}
+
+// firstHeaderValue returns the first comma-separated token of a forwarding
+// header (or the whole value when there is no comma), trimmed.
+func firstHeaderValue(value string) string {
+	if i := strings.IndexByte(value, ','); i >= 0 {
+		value = value[:i]
+	}
+	return strings.TrimSpace(value)
 }
 
 func (h Handler) forwardAuthStateCookieName() string {

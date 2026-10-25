@@ -36,6 +36,27 @@ func newForwardAuthTestHandler(t *testing.T) (*Handler, *util.Configuration) {
 	return h, conf
 }
 
+// newForwardAuthHostAwareTestHandler enables allowedCallbackOrigins with a
+// second host (the cross-host deployment: issuer auth.example.com is not even
+// listed; nas.example.com is the protected app).
+func newForwardAuthHostAwareTestHandler(t *testing.T) (*Handler, *util.Configuration) {
+	t.Helper()
+	extra := fmt.Sprintf(`,
+  "forwardAuth": {
+    "enabled": true,
+    "clientId": "proxy",
+    "clientSecret": "proxy-secret-value",
+    "cookieSecret": %q,
+    "allowedCallbackOrigins": ["https://nas.example.com", "https://other.example.com"],
+    "allowedRedirectDomains": ["allowed.example.com"]
+  }`, forwardAuthCookieSecret)
+	h, conf := newTestHandlerWithConfig(t, extra)
+	if err := h.EnsureForwardAuthClient(); err != nil {
+		t.Fatalf("EnsureForwardAuthClient: %v", err)
+	}
+	return h, conf
+}
+
 func forwardAuthCookieFromResp(resp *http.Response, name string) *http.Cookie {
 	for _, cookie := range resp.Cookies() {
 		if cookie.Name == name {
@@ -43,6 +64,26 @@ func forwardAuthCookieFromResp(resp *http.Response, name string) *http.Cookie {
 		}
 	}
 	return nil
+}
+
+// newForwardAuthStartRequest builds a GET /oauth2/start request carrying the
+// reverse-proxy headers that make the request origin the given host/scheme.
+// The forward-auth endpoints only run behind the operator's proxy, so the
+// headers (which nginx always sets) are how tests select an origin.
+func newForwardAuthStartRequest(t *testing.T, srvURL, host, proto, rd string) *http.Request {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, srvURL+"/oauth2/start?rd="+url.QueryEscape(rd), nil)
+	if err != nil {
+		t.Fatalf("new start request: %v", err)
+	}
+	if host != "" {
+		req.Host = host
+		req.Header.Set("X-Forwarded-Host", host)
+	}
+	if proto != "" {
+		req.Header.Set("X-Forwarded-Proto", proto)
+	}
+	return req
 }
 
 // seedProxySession inserts a server-side session row and returns its opaque id.
@@ -92,7 +133,10 @@ func TestForwardAuthStartRedirectsToAuthorize(t *testing.T) {
 	srv := httptest.NewServer(h.router())
 	defer srv.Close()
 
-	resp, err := noRedirectClient().Get(srv.URL + "/oauth2/start?rd=/app")
+	// Single-host default: no allowedCallbackOrigins, so the effective origin
+	// is the issuer origin. The proxy presents that host/proto.
+	req := newForwardAuthStartRequest(t, srv.URL, "issuer.example.com", "https", "/app")
+	resp, err := noRedirectClient().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,6 +190,9 @@ func TestForwardAuthStartRedirectsToAuthorize(t *testing.T) {
 	if st.Rd != "/app" {
 		t.Errorf("state cookie rd = %q, want /app", st.Rd)
 	}
+	if st.RedirectUri != q.Get("redirect_uri") {
+		t.Errorf("state cookie redirect_uri = %q, want %q", st.RedirectUri, q.Get("redirect_uri"))
+	}
 	sum := sha256.Sum256([]byte(st.CodeVerifier))
 	if got := base64.RawURLEncoding.EncodeToString(sum[:]); got != q.Get("code_challenge") {
 		t.Errorf("code_challenge = %q, want S256 of verifier (%q)", q.Get("code_challenge"), got)
@@ -190,7 +237,8 @@ func TestForwardAuthStartRejectsOpenRedirect(t *testing.T) {
 		{"data:text/html,<script>", "/"},
 	}
 	for _, tc := range cases {
-		resp, err := noRedirectClient().Get(srv.URL + "/oauth2/start?rd=" + url.QueryEscape(tc.in))
+		req := newForwardAuthStartRequest(t, srv.URL, "issuer.example.com", "https", tc.in)
+		resp, err := noRedirectClient().Do(req)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -209,6 +257,247 @@ func TestForwardAuthStartRejectsOpenRedirect(t *testing.T) {
 	}
 }
 
+func TestForwardAuthStartHostAwareUsesAppOrigin(t *testing.T) {
+	h, _ := newForwardAuthHostAwareTestHandler(t)
+	srv := httptest.NewServer(h.router())
+	defer srv.Close()
+
+	req := newForwardAuthStartRequest(t, srv.URL, "nas.example.com", "https", "/app")
+	resp, err := noRedirectClient().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("start status = %d, want 302", resp.StatusCode)
+	}
+	parsed, err := url.Parse(resp.Header.Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := parsed.Query()
+	if got := q.Get("redirect_uri"); got != "https://nas.example.com/oauth2/callback" {
+		t.Errorf("redirect_uri = %q, want https://nas.example.com/oauth2/callback", got)
+	}
+	stateCookie := forwardAuthCookieFromResp(resp, h.forwardAuthStateCookieName())
+	if stateCookie == nil || stateCookie.Value == "" {
+		t.Fatal("state cookie was not set")
+	}
+	var st forwardAuthState
+	if err := h.faCodec.Decode(stateCookie.Value, &st); err != nil {
+		t.Fatalf("decode state cookie: %v", err)
+	}
+	if st.RedirectUri != "https://nas.example.com/oauth2/callback" {
+		t.Errorf("state cookie redirect_uri = %q, want https://nas.example.com/oauth2/callback", st.RedirectUri)
+	}
+	if st.RedirectUri != q.Get("redirect_uri") {
+		t.Errorf("state redirect_uri %q != authorize redirect_uri %q", st.RedirectUri, q.Get("redirect_uri"))
+	}
+	if st.Rd != "/app" {
+		t.Errorf("state cookie rd = %q, want /app", st.Rd)
+	}
+}
+
+func TestForwardAuthStartDisallowedHostReturns400(t *testing.T) {
+	h, _ := newForwardAuthHostAwareTestHandler(t)
+	srv := httptest.NewServer(h.router())
+	defer srv.Close()
+
+	// Neither a random host nor the (unlisted) issuer host may start the flow
+	// when allowedCallbackOrigins is configured: there is no silent fallback.
+	for _, host := range []string{"evil.example.com", "issuer.example.com"} {
+		req := newForwardAuthStartRequest(t, srv.URL, host, "https", "/app")
+		resp, err := noRedirectClient().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("host %q start status = %d, want 400", host, resp.StatusCode)
+		}
+		if loc := resp.Header.Get("Location"); loc != "" {
+			t.Errorf("host %q must not redirect, got %q", host, loc)
+		}
+	}
+}
+
+func TestForwardAuthEnsureClientSeedsAndUnionsRedirects(t *testing.T) {
+	extra := fmt.Sprintf(`,
+  "forwardAuth": {
+    "enabled": true,
+    "clientId": "proxy",
+    "clientSecret": "proxy-secret-value",
+    "cookieSecret": %q,
+    "allowedCallbackOrigins": ["https://a.example.com", "https://b.example.com"]
+  }`, forwardAuthCookieSecret)
+	h, _ := newTestHandlerWithConfig(t, extra)
+	if err := h.EnsureForwardAuthClient(); err != nil {
+		t.Fatalf("EnsureForwardAuthClient: %v", err)
+	}
+	client, err := h.db.Clients.SelectByClientId("proxy")
+	if err != nil || client == nil {
+		t.Fatalf("select proxy client: %v", err)
+	}
+	want := []string{"https://a.example.com/oauth2/callback", "https://b.example.com/oauth2/callback"}
+	if got := strings.Split(client.Redirects, ","); len(got) != len(want) {
+		t.Fatalf("seeded redirects = %q, want exactly %v", client.Redirects, want)
+	}
+	for _, w := range want {
+		if !strings.Contains(client.Redirects, w) {
+			t.Fatalf("seeded redirects %q missing %q", client.Redirects, w)
+		}
+	}
+	secret := client.Secret
+	accessAge, refreshAge := client.AccessTokenAge, client.RefreshTokenAge
+
+	// A manually-added redirect must survive a re-ensure, without duplicates.
+	client.Redirects += ",https://manual.example.com/cb"
+	if err := h.db.Clients.UpdateById(client); err != nil {
+		t.Fatalf("update client: %v", err)
+	}
+	if err := h.EnsureForwardAuthClient(); err != nil {
+		t.Fatalf("re-ensure: %v", err)
+	}
+	after, err := h.db.Clients.SelectByClientId("proxy")
+	if err != nil || after == nil {
+		t.Fatalf("select after re-ensure: %v", err)
+	}
+	if got := strings.Split(after.Redirects, ","); len(got) != 3 {
+		t.Fatalf("redirects = %q, want 3 entries (union, no duplicates)", after.Redirects)
+	}
+	for _, w := range append(want, "https://manual.example.com/cb") {
+		if !strings.Contains(after.Redirects, w) {
+			t.Fatalf("redirects %q missing %q", after.Redirects, w)
+		}
+	}
+	if after.Secret != secret {
+		t.Error("re-ensure must not change the client secret")
+	}
+	if after.AccessTokenAge != accessAge || after.RefreshTokenAge != refreshAge {
+		t.Error("re-ensure must not change the client token ages")
+	}
+
+	// A further idempotent run must not duplicate anything.
+	if err := h.EnsureForwardAuthClient(); err != nil {
+		t.Fatalf("third ensure: %v", err)
+	}
+	final, err := h.db.Clients.SelectByClientId("proxy")
+	if err != nil || final == nil {
+		t.Fatalf("select final: %v", err)
+	}
+	if final.Redirects != after.Redirects {
+		t.Errorf("idempotent ensure changed redirects: %q -> %q", after.Redirects, final.Redirects)
+	}
+}
+
+// Full host-aware flow: start on the app host, mint the code the login would
+// issue, exchange it at the callback on the app host, then auth on the app
+// host. The session cookie is host-only and the final redirect is the relative
+// `rd`.
+func TestForwardAuthHostAwareFullFlow(t *testing.T) {
+	h, conf := newForwardAuthHostAwareTestHandler(t)
+	_, user := seedClientAndUser(t, h)
+	proxy, err := h.db.Clients.SelectByClientId("proxy")
+	if err != nil || proxy == nil {
+		t.Fatalf("select proxy client: %v", err)
+	}
+	const appOrigin = "https://nas.example.com"
+	if !strings.Contains(proxy.Redirects, appOrigin+"/oauth2/callback") {
+		t.Fatalf("proxy client redirects %q must include the app callback", proxy.Redirects)
+	}
+
+	srv := httptest.NewServer(h.router())
+	defer srv.Close()
+
+	// 1. start on the app host -> authorize redirect_uri is the app callback.
+	startReq := newForwardAuthStartRequest(t, srv.URL, "nas.example.com", "https", "/app")
+	startResp, err := noRedirectClient().Do(startReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = startResp.Body.Close()
+	if startResp.StatusCode != http.StatusFound {
+		t.Fatalf("start status = %d, want 302", startResp.StatusCode)
+	}
+	stateCookie := forwardAuthCookieFromResp(startResp, h.forwardAuthStateCookieName())
+	if stateCookie == nil || stateCookie.Value == "" {
+		t.Fatal("state cookie was not set")
+	}
+	var st forwardAuthState
+	if err := h.faCodec.Decode(stateCookie.Value, &st); err != nil {
+		t.Fatalf("decode state cookie: %v", err)
+	}
+	if st.RedirectUri != appOrigin+"/oauth2/callback" {
+		t.Fatalf("state redirect_uri = %q, want %q", st.RedirectUri, appOrigin+"/oauth2/callback")
+	}
+
+	// 2. simulate the login consequence: an authorization code bound to the
+	// exact redirect_uri and PKCE challenge the start stored.
+	code, err := h.authCodeStore.Generate(util.AuthorizationInfo{
+		ClientId:      proxy.Id,
+		UserId:        user.Id,
+		RedirectUri:   st.RedirectUri,
+		Scope:         "openid profile",
+		State:         st.State,
+		Nonce:         "n-1",
+		CodeChallenge: challengeOf(st.CodeVerifier),
+	})
+	if err != nil {
+		t.Fatalf("generate code: %v", err)
+	}
+
+	// 3. callback on the app host: sets a host-only session cookie and
+	// redirects to the relative rd.
+	cbReq, err := http.NewRequest(http.MethodGet, srv.URL+"/oauth2/callback?code="+url.QueryEscape(code)+"&state="+url.QueryEscape(st.State), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cbReq.Host = "nas.example.com"
+	cbReq.Header.Set("X-Forwarded-Host", "nas.example.com")
+	cbReq.Header.Set("X-Forwarded-Proto", "https")
+	cbReq.AddCookie(&http.Cookie{Name: h.forwardAuthStateCookieName(), Value: stateCookie.Value})
+	cbResp, err := noRedirectClient().Do(cbReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = cbResp.Body.Close()
+	if cbResp.StatusCode != http.StatusFound {
+		t.Fatalf("callback status = %d, want 302", cbResp.StatusCode)
+	}
+	if loc := cbResp.Header.Get("Location"); loc != "/app" {
+		t.Fatalf("callback location = %q, want relative /app", loc)
+	}
+	sessionCookie := forwardAuthCookieFromResp(cbResp, conf.ForwardAuth.CookieName)
+	if sessionCookie == nil || sessionCookie.Value == "" {
+		t.Fatal("session cookie was not set")
+	}
+	if sessionCookie.Domain != "" {
+		t.Errorf("session cookie must be host-only (no Domain), got %q", sessionCookie.Domain)
+	}
+	if !sessionCookie.HttpOnly {
+		t.Error("session cookie must be HttpOnly")
+	}
+
+	// 4. auth on the app host with that session cookie -> 202.
+	authReq, err := http.NewRequest(http.MethodGet, srv.URL+"/oauth2/auth", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authReq.Host = "nas.example.com"
+	authReq.AddCookie(&http.Cookie{Name: conf.ForwardAuth.CookieName, Value: sessionCookie.Value})
+	authResp, err := http.DefaultClient.Do(authReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = authResp.Body.Close()
+	if authResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("auth on app host status = %d, want 202", authResp.StatusCode)
+	}
+	if got := authResp.Header.Get("X-Auth-Request-User"); got != user.Uuid {
+		t.Errorf("X-Auth-Request-User = %q, want %q", got, user.Uuid)
+	}
+}
+
 func TestForwardAuthCallbackSetsSession(t *testing.T) {
 	h, conf := newForwardAuthTestHandler(t)
 	_, user := seedClientAndUser(t, h)
@@ -219,10 +508,11 @@ func TestForwardAuthCallbackSetsSession(t *testing.T) {
 
 	verifier := strings.Repeat("a", 64)
 	state := "state-abc"
+	callbackURI := conf.OidcIssuer + conf.ForwardAuth.CallbackPath
 	code, err := h.authCodeStore.Generate(util.AuthorizationInfo{
 		ClientId:      proxy.Id,
 		UserId:        user.Id,
-		RedirectUri:   h.forwardAuthRedirectURI(),
+		RedirectUri:   callbackURI,
 		Scope:         "openid profile",
 		State:         state,
 		Nonce:         "n-1",
@@ -231,7 +521,7 @@ func TestForwardAuthCallbackSetsSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate code: %v", err)
 	}
-	stateCookie, err := h.faCodec.Encode(forwardAuthState{State: state, CodeVerifier: verifier, Rd: "/app"})
+	stateCookie, err := h.faCodec.Encode(forwardAuthState{State: state, CodeVerifier: verifier, Rd: "/app", RedirectUri: callbackURI})
 	if err != nil {
 		t.Fatal(err)
 	}

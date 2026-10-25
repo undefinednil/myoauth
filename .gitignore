@@ -4,11 +4,12 @@ frontend/node_modules/
 frontend/dist/
 web/dist/*
 !web/dist/.gitkeep
-my-oauth
-my-oauth.exe
+*.log
+# Native build artifacts (never commit a stray build output).
 myoauth
 myoauth.exe
-*.log
+my-oauth
+my-oauth.exe
 private_key
 oauth.private.pem
 oauth.private.public.pem

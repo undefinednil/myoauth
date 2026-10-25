@@ -44,7 +44,7 @@ const frontendNotBuiltHTML = `<!DOCTYPE html>
 </head>
 <body>
 <h1>Frontend not built</h1>
-<p>The embedded frontend has not been built yet. Run <code>make web</code> to build it.</p>
+<p>The embedded frontend has not been built yet. Run <code>npm --prefix frontend run build</code> to build it.</p>
 </body>
 </html>
 `
