@@ -1,40 +1,49 @@
-import { useState } from "react";
+import type { ButtonHTMLAttributes, ReactNode } from "react";
+import { Spinner } from "./Spinner.tsx";
+
+export type ButtonVariant = "primary" | "secondary" | "danger" | "ghost";
+
+type Props = ButtonHTMLAttributes<HTMLButtonElement> & {
+  variant?: ButtonVariant;
+  loading?: boolean;
+  icon?: ReactNode;
+  block?: boolean;
+};
 
 export function Button({
-  text,
-  click,
+  variant = "primary",
+  loading = false,
+  icon,
+  block = false,
   className,
-}: {
-  text: string;
-  click?: () => void;
-  className?: string;
-}) {
-  const [myClassName, setMyClassName] = useState(`${className} button`);
-
-  function mouseDown() {
-    setMyClassName(`${className} button button-pressed`);
-  }
-
-  function mouseUp() {
-    setMyClassName(`${className} button`);
-    if (click) {
-      click();
-    }
-  }
-
-  function mouseLeave() {
-    setMyClassName(`${className} button`);
-  }
+  children,
+  disabled,
+  type = "button",
+  ...rest
+}: Props) {
+  const classes = [
+    "btn",
+    `btn-${variant}`,
+    block ? "btn-block" : "",
+    className ?? "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   return (
     <button
-      type="button"
-      className={myClassName}
-      onMouseDown={mouseDown}
-      onMouseUp={mouseUp}
-      onMouseLeave={mouseLeave}
+      type={type}
+      className={classes}
+      disabled={disabled || loading}
+      aria-busy={loading || undefined}
+      {...rest}
     >
-      {text}
+      {loading ? (
+        <Spinner size="sm" />
+      ) : icon ? (
+        <span className="btn-icon">{icon}</span>
+      ) : null}
+      <span>{children}</span>
     </button>
   );
 }

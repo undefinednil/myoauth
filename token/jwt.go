@@ -17,14 +17,36 @@ import (
 	"github.com/zenpk/my-oauth/util"
 )
 
+// Token use values distinguishing access tokens from ID tokens. Without this
+// claim both token kinds are indistinguishable (same signing key, same
+// audience), so an ID token would be accepted where an access token is
+// required (FIX F3).
+const (
+	TokenUseAccess = "access"
+	TokenUseID     = "id"
+)
+
 type AccessTokenClaims struct {
 	jwt.RegisteredClaims
+	TokenUse string `json:"token_use,omitempty"`
+	Scope    string `json:"scope,omitempty"`
 }
 
 type IDTokenClaims struct {
 	jwt.RegisteredClaims
-	Nonce string `json:"nonce,omitempty"`
-	Name  string `json:"name,omitempty"`
+	TokenUse string `json:"token_use,omitempty"`
+	Nonce    string `json:"nonce,omitempty"`
+	Name     string `json:"name,omitempty"`
+	AuthTime int64  `json:"auth_time,omitempty"`
+	AtHash   string `json:"at_hash,omitempty"`
+	CHash    string `json:"c_hash,omitempty"`
+}
+
+// OIDCHash computes the at_hash/c_hash claim value for OIDC: the SHA-256 digest
+// of the value, truncated to its left half (128 bits), base64url without padding.
+func OIDCHash(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return base64.RawURLEncoding.EncodeToString(sum[:len(sum)/2])
 }
 
 func (t *Token) Init(conf *util.Configuration, logger *util.Logger) error {
@@ -82,7 +104,40 @@ func (t *Token) GenIDToken(claims *IDTokenClaims) (string, error) {
 	return token.String(), nil
 }
 
+// ParseAndVerifyJwt parses and verifies a JWT without enforcing a token_use
+// value. Prefer ParseAndVerifyAccessJwt / ParseAndVerifyIDJwt in security
+// sensitive paths.
 func (t *Token) ParseAndVerifyJwt(token string, expectedAudience ...string) (*AccessTokenClaims, bool, error) {
+	return t.parseAndVerifyJwt(token, "", expectedAudience...)
+}
+
+// ParseAndVerifyAccessJwt parses and verifies an access token, rejecting any
+// token whose token_use is not "access" (e.g. an ID token). This prevents
+// token-type confusion at /userinfo, /introspect and /revoke (FIX F3).
+func (t *Token) ParseAndVerifyAccessJwt(token string, expectedAudience ...string) (*AccessTokenClaims, bool, error) {
+	return t.parseAndVerifyJwt(token, TokenUseAccess, expectedAudience...)
+}
+
+// ParseAndVerifyIDJwt parses and verifies an ID token, rejecting any token
+// whose token_use is not "id".
+func (t *Token) ParseAndVerifyIDJwt(token string, expectedAudience ...string) (*AccessTokenClaims, bool, error) {
+	return t.parseAndVerifyJwt(token, TokenUseID, expectedAudience...)
+}
+
+// ParseAndVerifyIDJwtAllowExpired verifies an ID token's signature, issuer and
+// token_use but skips the expiry check. OIDC recommends accepting an expired ID
+// token as the logout id_token_hint so a user whose token has expired can still
+// have the RP initiate logout. It must never be used for /userinfo,
+// /introspect or /revoke.
+func (t *Token) ParseAndVerifyIDJwtAllowExpired(token string, expectedAudience ...string) (*AccessTokenClaims, bool, error) {
+	return t.parseAndVerifyJwtWithExpiry(token, TokenUseID, true, expectedAudience...)
+}
+
+func (t *Token) parseAndVerifyJwt(token, expectedTokenUse string, expectedAudience ...string) (*AccessTokenClaims, bool, error) {
+	return t.parseAndVerifyJwtWithExpiry(token, expectedTokenUse, false, expectedAudience...)
+}
+
+func (t *Token) parseAndVerifyJwtWithExpiry(token, expectedTokenUse string, allowExpired bool, expectedAudience ...string) (*AccessTokenClaims, bool, error) {
 	verifier, err := jwt.NewVerifierRS(jwt.RS256, &t.rsaPrivateKey.PublicKey)
 	if err != nil {
 		return nil, false, err
@@ -101,6 +156,10 @@ func (t *Token) ParseAndVerifyJwt(token string, expectedAudience ...string) (*Ac
 		t.logger.Println("verify JWT error: issuer not matched")
 		return nil, false, nil
 	}
+	if expectedTokenUse != "" && newClaims.TokenUse != expectedTokenUse {
+		t.logger.Println("verify JWT error: token_use not matched")
+		return nil, false, nil
+	}
 	if len(expectedAudience) > 0 {
 		matched := false
 		for _, aud := range expectedAudience {
@@ -117,7 +176,7 @@ func (t *Token) ParseAndVerifyJwt(token string, expectedAudience ...string) (*Ac
 		t.logger.Println("verify JWT error: audience missing")
 		return nil, false, nil
 	}
-	if !newClaims.IsValidAt(time.Now()) {
+	if !allowExpired && !newClaims.IsValidAt(time.Now()) {
 		t.logger.Println("verify JWT error: token expired")
 		return nil, false, nil
 	}

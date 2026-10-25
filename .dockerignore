@@ -1,0 +1,41 @@
+# Keep the build context small and free of secrets/artifacts.
+# The Go source (main.go, dal/, handler/, service/, token/, util/, web/) and the
+# frontend source (frontend/, minus node_modules and dist) MUST stay in context.
+
+# VCS / CI
+.git
+.github
+
+# Node dependencies and Vite's own output (the SPA is rebuilt inside the image).
+frontend/node_modules
+frontend/dist
+node_modules
+
+# Built SPA assets: produced by stage A, never taken from the build context.
+# This is what keeps the backend stage independent of a context-provided dist.
+web/dist
+
+# Local runtime data (depth-aware so nested databases/logs are also excluded).
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/*.log
+data/
+
+# Secrets and local config
+.env
+frontend/.env
+conf.json
+conf-local.json
+**/*.pem
+private_key
+
+# Compiled binaries
+myoauth
+myoauth.exe
+my-oauth
+my-oauth.exe
+
+# Misc
+e2e
+screenshot.png

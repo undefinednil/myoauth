@@ -1,11 +1,18 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import "./styles/main.css";
-import "./styles/nprogress.css";
 import { RouterProvider, createBrowserRouter } from "react-router-dom";
-import { Admin } from "./Admin.tsx";
-import { Login } from "./Login.tsx";
-import { Register } from "./Register.tsx";
+import { ErrorBoundary } from "./components/ErrorBoundary.tsx";
+import { ToastProvider } from "./components/Toast.tsx";
+import { Admin } from "./pages/Admin.tsx";
+import { Login } from "./pages/Login.tsx";
+import { Logout } from "./pages/Logout.tsx";
+import { NotFound } from "./pages/NotFound.tsx";
+import { Register } from "./pages/Register.tsx";
+import "./styles/tokens.css";
+import "./styles/main.css";
+import { initTheme } from "./theme.ts";
+
+initTheme();
 
 const router = createBrowserRouter([
   {
@@ -20,10 +27,26 @@ const router = createBrowserRouter([
     path: "/register",
     element: <Register />,
   },
+  {
+    path: "/logout",
+    element: <Logout />,
+  },
+  {
+    path: "*",
+    element: <NotFound />,
+  },
 ]);
 
-ReactDOM.createRoot(document.getElementById("root")!).render(
-  <React.StrictMode>
-    <RouterProvider router={router} />
-  </React.StrictMode>,
-);
+const rootElement = document.getElementById("root");
+
+if (rootElement) {
+  ReactDOM.createRoot(rootElement).render(
+    <React.StrictMode>
+      <ErrorBoundary>
+        <ToastProvider>
+          <RouterProvider router={router} />
+        </ToastProvider>
+      </ErrorBoundary>
+    </React.StrictMode>,
+  );
+}

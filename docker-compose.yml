@@ -1,0 +1,44 @@
+# MyOAuth via Docker Compose.
+#
+# The container runs as uid:gid 100:101 (non-root, see Dockerfile), so the host
+# files it reads/writes must be owned by / writable to 100:101.
+#
+# First run (from the repo root):
+#   1. cp conf.docker.example.json conf.json   # then edit conf.json:
+#        - replace adminPassword with a bcrypt hash of your own password
+#          (see README "Docker" for how to generate one)
+#        - dbPath/logFilePath already point under /data
+#        - rsaPrivateKeyPath already points at /config/oauth.private.pem
+#        - set secureCookies to true if you serve over HTTPS
+#   2. bash scripts/gen_keys.sh oauth.private.pem   # generate the RSA key
+#   3. mkdir -p data
+#   4. chown -R 100:101 data                        # writable by the container
+#   5. chown 100:101 oauth.private.pem && chmod 640 oauth.private.pem
+#   6. docker compose up -d --build
+#
+# The image's default CMD passes `-conf /config/conf.json`; to use a different
+# config path, override `command:`. The `-conf` flag takes precedence over the
+# (optional) MYOAUTH_CONF env var, see main.go.
+
+services:
+  myoauth:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: myoauth:latest
+    ports:
+      - "20476:20476"
+    volumes:
+      # Persistent SQLite database + log file.
+      - ./data:/data
+      # Config and RSA key are read-only inside the container.
+      - ./conf.json:/config/conf.json:ro
+      - ./oauth.private.pem:/config/oauth.private.pem:ro
+    restart: unless-stopped
+    # NOTE: 20476 is coupled to `httpAddress` in conf.json; change both together.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:20476/health"]
+      interval: 30s
+      timeout: 3s
+      start_period: 5s
+      retries: 3

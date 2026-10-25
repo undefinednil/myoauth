@@ -6,17 +6,17 @@ set -euo pipefail
 # so no extra server-side configuration is needed.
 #
 # Usage:
-#   ./gen_rsa.sh
-#   ./gen_rsa.sh /path/to/private.pem
-#   RSA_BITS=4096 ./gen_rsa.sh
-#   FORCE=1 ./gen_rsa.sh
+#   ./scripts/gen_keys.sh
+#   ./scripts/gen_keys.sh /path/to/private.pem
+#   RSA_BITS=4096 ./scripts/gen_keys.sh
+#   FORCE=1 ./scripts/gen_keys.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 BITS="${RSA_BITS:-4096}"
 FORCE_WRITE="${FORCE:-0}"
-CONF_FILE="conf.json"
+CONF_FILE="$REPO_ROOT/conf.json"
 
 extract_private_path_from_conf() {
   if [[ ! -f "$CONF_FILE" ]]; then
@@ -39,7 +39,7 @@ if [[ -z "$PRIVATE_PATH" ]]; then
 fi
 
 if [[ "$PRIVATE_PATH" != /* ]]; then
-  PRIVATE_PATH="$SCRIPT_DIR/$PRIVATE_PATH"
+  PRIVATE_PATH="$REPO_ROOT/$PRIVATE_PATH"
 fi
 
 PRIVATE_DIR="$(dirname "$PRIVATE_PATH")"

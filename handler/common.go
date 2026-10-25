@@ -62,3 +62,15 @@ func genOkResponse() commonResp {
 		Msg: "ok",
 	}
 }
+
+// hasControlChars reports whether s contains any ASCII control character
+// (< 0x20 or DEL). Such names could break response headers downstream, so they
+// are rejected at registration (FIX B).
+func hasControlChars(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
+}

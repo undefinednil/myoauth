@@ -19,6 +19,7 @@ type AuthorizationInfo struct {
 	State         string
 	Nonce         string
 	CodeChallenge string
+	CreatedAt     time.Time
 }
 
 type authCodeEntry struct {
@@ -49,6 +50,9 @@ func (a *AuthorizationCodeStore) Generate(info AuthorizationInfo) (string, error
 	}
 
 	now := time.Now()
+	if info.CreatedAt.IsZero() {
+		info.CreatedAt = now
+	}
 
 	a.mu.Lock()
 	defer a.mu.Unlock()

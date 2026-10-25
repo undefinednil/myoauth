@@ -3,6 +3,7 @@ package dal
 import (
 	"database/sql"
 	"errors"
+	"log"
 )
 
 type IClient interface {
@@ -11,6 +12,7 @@ type IClient interface {
 	SelectById(id int64) (*Client, error)
 	SelectByClientId(clientId string) (*Client, error)
 	SelectAll() ([]*Client, error)
+	UpdateById(client *Client) error
 	DeleteById(id int64) error
 }
 
@@ -47,7 +49,13 @@ func (c Client) Init() error {
 			return err
 		}
 	}
-	return rows.Close()
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if _, err := c.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_client_id_active ON clients(client_id) WHERE deleted = 0;`); err != nil {
+		log.Printf("could not create unique active client_id index (continuing): %v\n", err)
+	}
+	return nil
 }
 
 func (c Client) Insert(client *Client) error {
@@ -117,6 +125,12 @@ func (c Client) SelectAll() (clients []*Client, err error) {
 		clients = append(clients, client)
 	}
 	return clients, err
+}
+
+func (c Client) UpdateById(client *Client) error {
+	_, err := c.db.Exec("UPDATE clients SET client_id = ?, secret = ?, redirects = ?, access_token_age = ?, refresh_token_age = ? WHERE id = ? AND deleted = 0;",
+		client.ClientId, client.Secret, client.Redirects, client.AccessTokenAge, client.RefreshTokenAge, client.Id)
+	return err
 }
 
 func (c Client) DeleteById(id int64) error {

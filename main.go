@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,18 +20,29 @@ import (
 )
 
 func main() {
+	confPath := flag.String("conf", "", "path to the configuration file (default ./conf.json)")
 	flag.Parse()
 	// graceful exit
 	var cleanUpErr error
+	exitedCleanly := false
 	defer func() {
 		if cleanUpErr != nil {
 			panic(cleanUpErr)
 		}
-		log.Println("gracefully exited")
+		if exitedCleanly {
+			log.Println("gracefully exited")
+		}
 	}()
 
+	if strings.TrimSpace(*confPath) == "" {
+		*confPath = strings.TrimSpace(os.Getenv("MYOAUTH_CONF"))
+	}
+	if strings.TrimSpace(*confPath) == "" {
+		*confPath = "./conf.json"
+	}
+
 	conf := new(util.Configuration)
-	if err := conf.Init(); err != nil {
+	if err := conf.Init(*confPath); err != nil {
 		panic(err)
 	}
 
@@ -60,11 +72,16 @@ func main() {
 	if err := tk.Init(conf, logger); err != nil {
 		panic(err)
 	}
+	denylist := util.NewDenylist()
+	rateLimiter := util.NewRateLimiter(conf.RateLimitRequestsPerMinute, conf.RateLimitBurst, conf.RateLimitMaxKeys)
 	service := new(service.Service)
 	service.Init(conf, db)
 
 	hd := new(handler.Handler)
-	hd.Init(conf, logger, db, service, authCodeStore, tk)
+	hd.Init(conf, logger, db, service, authCodeStore, tk, denylist, rateLimiter)
+	if err := hd.EnsureForwardAuthClient(); err != nil {
+		panic(err)
+	}
 
 	// clean up
 	osSignalChan := make(chan os.Signal, 2)
@@ -83,4 +100,5 @@ func main() {
 	if err := hd.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		panic(err)
 	}
+	exitedCleanly = true
 }

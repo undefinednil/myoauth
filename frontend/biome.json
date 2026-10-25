@@ -31,6 +31,6 @@
     }
   },
   "files": {
-    "ignore": ["node_modules", "dist", "src/main.tsx"]
+    "ignore": ["node_modules", "dist"]
   }
 }

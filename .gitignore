@@ -2,9 +2,12 @@ conf-local.json
 conf.json
 frontend/node_modules/
 frontend/dist/
+web/dist/*
+!web/dist/.gitkeep
 my-oauth
 my-oauth.exe
 myoauth
+myoauth.exe
 *.log
 private_key
 oauth.private.pem

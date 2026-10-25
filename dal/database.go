@@ -12,6 +12,8 @@ type Database struct {
 	Users         IUser
 	RefreshTokens IRefreshToken
 	Clients       IClient
+	TokenStore    ITokenStore
+	ProxySessions IProxySession
 }
 
 func (d *Database) Init(conf *util.Configuration) error {
@@ -38,10 +40,20 @@ func (d *Database) Init(conf *util.Configuration) error {
 	if err := clients.Init(); err != nil {
 		return err
 	}
+	tokenStore := &TokenStore{db: sqlite}
+	if err := tokenStore.Init(); err != nil {
+		return err
+	}
+	proxySessions := &ProxySession{db: sqlite}
+	if err := proxySessions.Init(); err != nil {
+		return err
+	}
 	d.instance = sqlite
 	d.Users = users
 	d.RefreshTokens = refreshTokens
 	d.Clients = clients
+	d.TokenStore = tokenStore
+	d.ProxySessions = proxySessions
 	return nil
 }
 

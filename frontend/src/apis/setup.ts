@@ -1,10 +1,8 @@
-import type { Dispatch, SetStateAction } from "react";
-import { type CommonResp, axiosDelete, axiosGet, axiosPost } from "./basic.ts";
+import { type CommonResp, apiDelete, apiGet, apiPost } from "./basic.ts";
 
 export type Client = {
-  id?: number;
+  id: number;
   clientId: string;
-  secret: string;
   redirects: string;
   accessTokenAge: number;
   refreshTokenAge: number;
@@ -12,25 +10,23 @@ export type Client = {
 
 export type ClientListResp = { clients: Client[] } & CommonResp;
 
-export async function adminLoginApi(
-  adminPassword: string,
-  setWarn: Dispatch<SetStateAction<string>>,
-) {
-  return axiosPost<{ adminPassword: string }, CommonResp>(
+export type AdminLoginResp = CommonResp & { csrfToken?: string };
+
+export function adminLogin(adminPassword: string) {
+  return apiPost<{ adminPassword: string }, AdminLoginResp>(
     "/setup/admin-login",
-    { adminPassword },
-    setWarn,
+    {
+      adminPassword,
+    },
   );
 }
 
-export async function adminLogoutApi(
-  setWarn: Dispatch<SetStateAction<string>>,
-) {
-  return axiosPost<object, CommonResp>("/setup/admin-logout", {}, setWarn);
+export function adminLogout() {
+  return apiPost<object, CommonResp>("/setup/admin-logout", {});
 }
 
-export async function clientListApi(setWarn: Dispatch<SetStateAction<string>>) {
-  return axiosGet<ClientListResp>("/setup/client-list", setWarn);
+export function clientList() {
+  return apiGet<ClientListResp>("/setup/client-list");
 }
 
 export type ClientCreateReq = {
@@ -41,30 +37,31 @@ export type ClientCreateReq = {
   refreshTokenAge: number;
 };
 
-export async function clientCreateApi(
-  req: ClientCreateReq,
-  setWarn: Dispatch<SetStateAction<string>>,
-) {
-  return axiosPost<ClientCreateReq, CommonResp>(
-    "/setup/client-create",
-    req,
-    setWarn,
-  );
+export function clientCreate(req: ClientCreateReq) {
+  return apiPost<ClientCreateReq, CommonResp>("/setup/client-create", req);
 }
 
-export type ClientDeleteReq = {
+export type ClientUpdateReq = {
   id: number;
+  clientId: string;
+  secret: string;
+  redirects: string;
+  accessTokenAge: number;
+  refreshTokenAge: number;
 };
 
-export async function clientDeleteApi(
-  req: ClientDeleteReq,
-  setWarn: Dispatch<SetStateAction<string>>,
-) {
-  return axiosDelete<ClientDeleteReq, CommonResp>(
-    "/setup/client-delete",
-    req,
-    setWarn,
-  );
+export function clientUpdate(req: ClientUpdateReq) {
+  return apiPost<ClientUpdateReq, CommonResp>("/setup/client-update", req);
+}
+
+export function clientDelete(id: number) {
+  return apiDelete<{ id: number }, CommonResp>("/setup/client-delete", { id });
+}
+
+export function sessionRevoke(clientId: number) {
+  return apiPost<{ clientId: number }, CommonResp>("/setup/session-revoke", {
+    clientId,
+  });
 }
 
 export type RegisterReq = {
@@ -73,9 +70,6 @@ export type RegisterReq = {
   invitationCode: string;
 };
 
-export async function registerApi(
-  req: RegisterReq,
-  setWarn: Dispatch<SetStateAction<string>>,
-) {
-  return axiosPost<RegisterReq, CommonResp>("/setup/register", req, setWarn);
+export function register(req: RegisterReq) {
+  return apiPost<RegisterReq, CommonResp>("/setup/register", req);
 }

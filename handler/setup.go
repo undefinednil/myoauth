@@ -3,6 +3,7 @@ package handler
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -16,10 +17,16 @@ import (
 )
 
 const adminCookieName = "admin_session"
+const adminCSRFCookieName = "admin_csrf"
 const adminSessionDuration = 1 * time.Hour
 
 type adminLoginReq struct {
 	AdminPassword string `json:"adminPassword"`
+}
+
+type adminLoginResp struct {
+	commonResp
+	CsrfToken string `json:"csrfToken"`
 }
 
 func (h Handler) adminLogin(w http.ResponseWriter, r *http.Request) {
@@ -41,6 +48,11 @@ func (h Handler) adminLogin(w http.ResponseWriter, r *http.Request) {
 		responseErrMsg(w, "incorrect admin password")
 		return
 	}
+	csrfToken, err := util.RandomHex(32)
+	if err != nil {
+		responseInternalError(w, h.logger, err)
+		return
+	}
 	expiry := time.Now().Add(adminSessionDuration)
 	token := h.signAdminToken(expiry)
 	http.SetCookie(w, &http.Cookie{
@@ -52,10 +64,27 @@ func (h Handler) adminLogin(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(adminSessionDuration.Seconds()),
 	})
-	responseOk(w)
+	// Readable by the SPA (double-submit CSRF token), hence not HttpOnly.
+	http.SetCookie(w, &http.Cookie{
+		Name:     adminCSRFCookieName,
+		Value:    csrfToken,
+		Path:     "/",
+		HttpOnly: false,
+		Secure:   h.conf.SecureCookies,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   int(adminSessionDuration.Seconds()),
+	})
+	responseJson(w, adminLoginResp{
+		commonResp: genOkResponse(),
+		CsrfToken:  csrfToken,
+	})
 }
 
 func (h Handler) adminLogout(w http.ResponseWriter, r *http.Request) {
+	if !h.verifyCSRF(r) {
+		responseJson(w, commonResp{Ok: false, Msg: "invalid csrf token"}, http.StatusForbidden)
+		return
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     adminCookieName,
 		Value:    "",
@@ -63,7 +92,28 @@ func (h Handler) adminLogout(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		MaxAge:   -1,
 	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     adminCSRFCookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: false,
+		MaxAge:   -1,
+	})
 	responseOk(w)
+}
+
+// verifyCSRF performs a constant-time double-submit cookie check: the
+// X-CSRF-Token header must match the readable admin_csrf cookie.
+func (h Handler) verifyCSRF(r *http.Request) bool {
+	cookie, err := r.Cookie(adminCSRFCookieName)
+	if err != nil || cookie.Value == "" {
+		return false
+	}
+	header := r.Header.Get("X-CSRF-Token")
+	if header == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(header), []byte(cookie.Value)) == 1
 }
 
 func (h Handler) verifyAdminSession(r *http.Request) bool {
@@ -130,6 +180,10 @@ func (h Handler) register(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(req.Username) > 256 {
 		responseErrMsg(w, "username is too long")
+		return
+	}
+	if hasControlChars(req.Username) {
+		responseErrMsg(w, "username must not contain control characters")
 		return
 	}
 	if len(req.Password) < h.conf.PasswordMinLength || len(req.Password) > 72 {
@@ -215,6 +269,10 @@ func (h Handler) clientCreate(w http.ResponseWriter, r *http.Request) {
 		responseJson(w, commonResp{Ok: false, Msg: "unauthorized"}, http.StatusUnauthorized)
 		return
 	}
+	if !h.verifyCSRF(r) {
+		responseJson(w, commonResp{Ok: false, Msg: "invalid csrf token"}, http.StatusForbidden)
+		return
+	}
 	var req clientCreateReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		responseInputError(w, err)
@@ -260,6 +318,85 @@ func (h Handler) clientCreate(w http.ResponseWriter, r *http.Request) {
 	responseOk(w)
 }
 
+type clientUpdateReq struct {
+	Id              int64  `json:"id"`
+	ClientId        string `json:"clientId"`
+	Secret          string `json:"secret"`
+	Redirects       string `json:"redirects"`
+	AccessTokenAge  int64  `json:"accessTokenAge"`
+	RefreshTokenAge int64  `json:"refreshTokenAge"`
+}
+
+func (h Handler) clientUpdate(w http.ResponseWriter, r *http.Request) {
+	if !h.verifyAdminSession(r) {
+		responseJson(w, commonResp{Ok: false, Msg: "unauthorized"}, http.StatusUnauthorized)
+		return
+	}
+	if !h.verifyCSRF(r) {
+		responseJson(w, commonResp{Ok: false, Msg: "invalid csrf token"}, http.StatusForbidden)
+		return
+	}
+	var req clientUpdateReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		responseInputError(w, err)
+		return
+	}
+	if req.Id <= 0 || req.ClientId == "" || req.Redirects == "" || req.AccessTokenAge <= 0 || req.RefreshTokenAge <= 0 {
+		responseInputError(w)
+		return
+	}
+	if len(req.ClientId) > 256 || len(req.Secret) > 256 || len(req.Redirects) > 2048 {
+		responseInputError(w)
+		return
+	}
+	if req.RefreshTokenAge <= req.AccessTokenAge {
+		responseErrMsg(w, "refresh token age should be longer than access token age")
+		return
+	}
+	existing, err := h.db.Clients.SelectById(req.Id)
+	if err != nil {
+		responseInternalError(w, h.logger, err)
+		return
+	}
+	if existing == nil {
+		responseErrMsg(w, "client doesn't exist")
+		return
+	}
+	if req.ClientId != existing.ClientId {
+		other, err := h.db.Clients.SelectByClientId(req.ClientId)
+		if err != nil {
+			responseInternalError(w, h.logger, err)
+			return
+		}
+		if other != nil && other.Id != req.Id {
+			responseErrMsg(w, "client id already exists")
+			return
+		}
+	}
+	secret := existing.Secret
+	if req.Secret != "" {
+		hashedSecret, err := util.BCryptPassword(req.Secret)
+		if err != nil {
+			responseInternalError(w, h.logger, err)
+			return
+		}
+		secret = hashedSecret
+	}
+	client := &dal.Client{
+		Id:              req.Id,
+		ClientId:        req.ClientId,
+		Secret:          secret,
+		Redirects:       req.Redirects,
+		AccessTokenAge:  req.AccessTokenAge,
+		RefreshTokenAge: req.RefreshTokenAge,
+	}
+	if err := h.db.Clients.UpdateById(client); err != nil {
+		responseInternalError(w, h.logger, err)
+		return
+	}
+	responseOk(w)
+}
+
 type clientDeleteReq struct {
 	Id int64 `json:"id"`
 }
@@ -267,6 +404,10 @@ type clientDeleteReq struct {
 func (h Handler) clientDelete(w http.ResponseWriter, r *http.Request) {
 	if !h.verifyAdminSession(r) {
 		responseJson(w, commonResp{Ok: false, Msg: "unauthorized"}, http.StatusUnauthorized)
+		return
+	}
+	if !h.verifyCSRF(r) {
+		responseJson(w, commonResp{Ok: false, Msg: "invalid csrf token"}, http.StatusForbidden)
 		return
 	}
 	var req clientDeleteReq
@@ -281,6 +422,53 @@ func (h Handler) clientDelete(w http.ResponseWriter, r *http.Request) {
 	if err := h.db.Clients.DeleteById(req.Id); err != nil {
 		responseInternalError(w, h.logger, err)
 		return
+	}
+	responseOk(w)
+}
+
+type sessionRevokeReq struct {
+	ClientId int64 `json:"clientId"`
+}
+
+func (h Handler) sessionRevoke(w http.ResponseWriter, r *http.Request) {
+	if !h.verifyAdminSession(r) {
+		responseJson(w, commonResp{Ok: false, Msg: "unauthorized"}, http.StatusUnauthorized)
+		return
+	}
+	if !h.verifyCSRF(r) {
+		responseJson(w, commonResp{Ok: false, Msg: "invalid csrf token"}, http.StatusForbidden)
+		return
+	}
+	var req sessionRevokeReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		responseInputError(w, err)
+		return
+	}
+	if req.ClientId < 0 {
+		responseInputError(w)
+		return
+	}
+	if req.ClientId == 0 {
+		if err := h.db.RefreshTokens.DeleteAll(); err != nil {
+			responseInternalError(w, h.logger, err)
+			return
+		}
+		// Invalidate outstanding access tokens too, durably (FIX F9).
+		if err := h.db.TokenStore.RevokeAccessTokensByClient(0); err != nil {
+			responseInternalError(w, h.logger, err)
+			return
+		}
+		h.logger.Printf("admin revoked sessions | clientId=all | ip=%v\n", clientIP(r, h.conf.TrustProxy))
+	} else {
+		if err := h.db.RefreshTokens.DeleteByClient(req.ClientId); err != nil {
+			responseInternalError(w, h.logger, err)
+			return
+		}
+		if err := h.db.TokenStore.RevokeAccessTokensByClient(req.ClientId); err != nil {
+			responseInternalError(w, h.logger, err)
+			return
+		}
+		h.logger.Printf("admin revoked sessions | clientId=%v | ip=%v\n", req.ClientId, clientIP(r, h.conf.TrustProxy))
 	}
 	responseOk(w)
 }

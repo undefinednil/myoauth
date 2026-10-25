@@ -10,6 +10,10 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
+    build: {
+      outDir: "../web/dist",
+      emptyOutDir: false,
+    },
     server: {
       proxy: {
         "/api": {

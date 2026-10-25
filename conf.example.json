@@ -11,5 +11,25 @@
   "passwordMinLength": 8,
   "dbPath": "demo.db",
   "logFilePath": "my-oauth.log",
-  "rsaPrivateKeyPath": "demo"
+  "rsaPrivateKeyPath": "demo",
+  "rateLimitEnabled": true,
+  "rateLimitRequestsPerMinute": 30,
+  "rateLimitBurst": 10,
+  "rateLimitMaxKeys": 100000,
+  "trustProxy": false,
+  "forwardAuth": {
+    "enabled": false,
+    "clientId": "proxy",
+    "clientSecret": "REPLACE_ME_WITH_A_STRONG_SECRET",
+    "cookieSecret": "REPLACE_ME_WITH_AT_LEAST_32_CHARACTERS",
+    "cookieName": "_myoauth_proxy",
+    "cookieDomain": "",
+    "cookieSecure": false,
+    "sessionTtlSeconds": 0,
+    "loginPath": "/oauth2/start",
+    "callbackPath": "/oauth2/callback",
+    "authPath": "/oauth2/auth",
+    "signOutPath": "/oauth2/sign_out",
+    "allowedRedirectDomains": []
+  }
 }
