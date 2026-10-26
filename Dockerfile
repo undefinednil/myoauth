@@ -65,7 +65,19 @@ RUN apk add --no-cache ca-certificates \
 
 COPY --from=backend /out/myoauth /usr/local/bin/myoauth
 
-# Writable directory for the SQLite database and log file (mount a volume here).
+# Container defaults. `.env` (or `docker compose` `environment`) only needs the
+# per-deployment values (e.g. MYOAUTH_OIDC_ISSUER and MYOAUTH_ADMIN_PASSWORD);
+# everything else falls back to these. The RSA signing key is auto-generated in
+# /data on first boot unless MYOAUTH_RSA_PRIVATE_KEY_PATH points elsewhere.
+ENV MYOAUTH_HTTP_ADDRESS=0.0.0.0:20476 \
+    MYOAUTH_DB_PATH=/data/myoauth.db \
+    MYOAUTH_LOG_FILE_PATH=/data/my-oauth.log \
+    MYOAUTH_RSA_PRIVATE_KEY_PATH=/data/oauth.private.pem \
+    MYOAUTH_SECURE_COOKIES=true \
+    MYOAUTH_TRUST_PROXY=true
+
+# Writable directory for the SQLite database, log file and auto-generated key
+# (mount a volume here so they survive container upgrades).
 WORKDIR /data
 EXPOSE 20476
 
@@ -73,13 +85,11 @@ EXPOSE 20476
 # writes must be owned by / writable to 100:101 (see docker-compose.yml).
 USER myoauth
 
-# Default command is `myoauth -conf /config/conf.json`; override it (e.g. via
-# compose `command:` or `entrypoint:`) to point at another config file. This
-# flag takes precedence over the MYOAUTH_CONF env var (see main.go).
+# Configuration comes exclusively from the environment (see the ENV block
+# above); there is no config-file argument.
 ENTRYPOINT ["myoauth"]
-CMD ["-conf", "/config/conf.json"]
 
-# NOTE: this healthcheck port (20476) is coupled to `httpAddress` in the
-# config; changing one requires changing the other.
+# NOTE: this healthcheck port (20476) is coupled to MYOAUTH_HTTP_ADDRESS;
+# changing one requires changing the other.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD wget -q -O- http://127.0.0.1:20476/health || exit 1

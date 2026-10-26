@@ -1,18 +1,13 @@
 package handler
 
 import (
-	"crypto/rand"
-	"crypto/rsa"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -32,51 +27,79 @@ const (
 	testUserUuid     = "user-uuid-1"
 )
 
-func newTestHandler(t *testing.T) (*Handler, *util.Configuration) {
-	t.Helper()
-	return newTestHandlerWithConfig(t, "")
+// myOauthEnvKeys lists every MYOAUTH_* variable the server reads. Tests blank
+// them all so an ambient value cannot leak in; t.Setenv restores the originals
+// afterwards.
+var myOauthEnvKeys = []string{
+	"MYOAUTH_HTTP_ADDRESS",
+	"MYOAUTH_OIDC_ISSUER",
+	"MYOAUTH_OIDC_LOGIN_URL",
+	"MYOAUTH_INVITATION_CODE",
+	"MYOAUTH_ADMIN_PASSWORD",
+	"MYOAUTH_DB_PATH",
+	"MYOAUTH_LOG_FILE_PATH",
+	"MYOAUTH_RSA_PRIVATE_KEY_PATH",
+	"MYOAUTH_ALLOWED_ORIGINS",
+	"MYOAUTH_SECURE_COOKIES",
+	"MYOAUTH_TRUST_PROXY",
+	"MYOAUTH_PASSWORD_MIN_LENGTH",
+	"MYOAUTH_AUTHORIZATION_CODE_LENGTH",
+	"MYOAUTH_REFRESH_TOKEN_LENGTH",
+	"MYOAUTH_RATE_LIMIT_ENABLED",
+	"MYOAUTH_RATE_LIMIT_REQUESTS_PER_MINUTE",
+	"MYOAUTH_RATE_LIMIT_BURST",
+	"MYOAUTH_RATE_LIMIT_MAX_KEYS",
+	"MYOAUTH_FORWARD_AUTH_ENABLED",
+	"MYOAUTH_FORWARD_AUTH_CLIENT_ID",
+	"MYOAUTH_FORWARD_AUTH_CLIENT_SECRET",
+	"MYOAUTH_FORWARD_AUTH_COOKIE_SECRET",
+	"MYOAUTH_FORWARD_AUTH_COOKIE_NAME",
+	"MYOAUTH_FORWARD_AUTH_COOKIE_DOMAIN",
+	"MYOAUTH_FORWARD_AUTH_COOKIE_SECURE",
+	"MYOAUTH_FORWARD_AUTH_SESSION_TTL_SECONDS",
+	"MYOAUTH_FORWARD_AUTH_ALLOWED_CALLBACK_ORIGINS",
+	"MYOAUTH_FORWARD_AUTH_ALLOWED_REDIRECT_DOMAINS",
 }
 
-// newTestHandlerWithConfig is newTestHandler plus an extra raw JSON fragment
-// injected at the end of the config object (e.g. a forwardAuth block). The
-// fragment must include a leading comma when non-empty.
-func newTestHandlerWithConfig(t *testing.T, extraConfig string) (*Handler, *util.Configuration) {
+// clearMyOauthEnv blanks every MYOAUTH_* variable so a variable from the
+// surrounding shell cannot leak into a handler test.
+func clearMyOauthEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range myOauthEnvKeys {
+		t.Setenv(key, "")
+	}
+}
+
+func newTestHandler(t *testing.T) (*Handler, *util.Configuration) {
+	t.Helper()
+	return newTestHandlerWithEnv(t, nil)
+}
+
+// newTestHandlerWithEnv is newTestHandler plus a set of per-test MYOAUTH_*
+// overrides (e.g. the forwardAuth block), applied on top of a minimal baseline.
+// The RSA key path is intentionally left absent so token.Init auto-generates it.
+func newTestHandlerWithEnv(t *testing.T, overrides map[string]string) (*Handler, *util.Configuration) {
 	t.Helper()
 	dir := t.TempDir()
 
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate key: %v", err)
-	}
-	keyPath := filepath.Join(dir, "private.pem")
-	pemBytes := pem.EncodeToMemory(&pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: x509.MarshalPKCS1PrivateKey(key),
-	})
-	if err := os.WriteFile(keyPath, pemBytes, 0o600); err != nil {
-		t.Fatalf("write key: %v", err)
-	}
-
-	confJSON := fmt.Sprintf(`{
-  "httpAddress": "127.0.0.1:0",
-  "oidcIssuer": "https://issuer.example.com",
-  "oidcLoginUrl": "https://issuer.example.com/login",
-  "invitationCode": "test-invite",
-  "adminPassword": "admin-secret",
-  "authorizationCodeLength": 48,
-  "refreshTokenLength": 48,
-  "passwordMinLength": 8,
-  "dbPath": %q,
-  "logFilePath": %q,
-  "rsaPrivateKeyPath": %q%s
-}`, filepath.Join(dir, "test.db"), filepath.Join(dir, "test.log"), keyPath, extraConfig)
-	confPath := filepath.Join(dir, "conf.json")
-	if err := os.WriteFile(confPath, []byte(confJSON), 0o600); err != nil {
-		t.Fatalf("write conf: %v", err)
+	clearMyOauthEnv(t)
+	t.Setenv("MYOAUTH_HTTP_ADDRESS", "127.0.0.1:0")
+	t.Setenv("MYOAUTH_OIDC_ISSUER", "https://issuer.example.com")
+	t.Setenv("MYOAUTH_OIDC_LOGIN_URL", "https://issuer.example.com/login")
+	t.Setenv("MYOAUTH_INVITATION_CODE", "test-invite")
+	t.Setenv("MYOAUTH_ADMIN_PASSWORD", "admin-secret")
+	t.Setenv("MYOAUTH_AUTHORIZATION_CODE_LENGTH", "48")
+	t.Setenv("MYOAUTH_REFRESH_TOKEN_LENGTH", "48")
+	t.Setenv("MYOAUTH_PASSWORD_MIN_LENGTH", "8")
+	t.Setenv("MYOAUTH_DB_PATH", filepath.Join(dir, "test.db"))
+	t.Setenv("MYOAUTH_LOG_FILE_PATH", filepath.Join(dir, "test.log"))
+	t.Setenv("MYOAUTH_RSA_PRIVATE_KEY_PATH", filepath.Join(dir, "private.pem"))
+	for k, v := range overrides {
+		t.Setenv(k, v)
 	}
 
 	conf := new(util.Configuration)
-	if err := conf.Init(confPath); err != nil {
+	if err := conf.Init(); err != nil {
 		t.Fatalf("conf.Init: %v", err)
 	}
 

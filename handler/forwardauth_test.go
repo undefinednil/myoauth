@@ -21,15 +21,13 @@ const forwardAuthCookieSecret = "0123456789abcdef0123456789abcdef" // 32 chars
 
 func newForwardAuthTestHandler(t *testing.T) (*Handler, *util.Configuration) {
 	t.Helper()
-	extra := fmt.Sprintf(`,
-  "forwardAuth": {
-    "enabled": true,
-    "clientId": "proxy",
-    "clientSecret": "proxy-secret-value",
-    "cookieSecret": %q,
-    "allowedRedirectDomains": ["allowed.example.com"]
-  }`, forwardAuthCookieSecret)
-	h, conf := newTestHandlerWithConfig(t, extra)
+	h, conf := newTestHandlerWithEnv(t, map[string]string{
+		"MYOAUTH_FORWARD_AUTH_ENABLED":                  "true",
+		"MYOAUTH_FORWARD_AUTH_CLIENT_ID":                "proxy",
+		"MYOAUTH_FORWARD_AUTH_CLIENT_SECRET":            "proxy-secret-value",
+		"MYOAUTH_FORWARD_AUTH_COOKIE_SECRET":            forwardAuthCookieSecret,
+		"MYOAUTH_FORWARD_AUTH_ALLOWED_REDIRECT_DOMAINS": "allowed.example.com",
+	})
 	if err := h.EnsureForwardAuthClient(); err != nil {
 		t.Fatalf("EnsureForwardAuthClient: %v", err)
 	}
@@ -41,16 +39,14 @@ func newForwardAuthTestHandler(t *testing.T) (*Handler, *util.Configuration) {
 // listed; nas.example.com is the protected app).
 func newForwardAuthHostAwareTestHandler(t *testing.T) (*Handler, *util.Configuration) {
 	t.Helper()
-	extra := fmt.Sprintf(`,
-  "forwardAuth": {
-    "enabled": true,
-    "clientId": "proxy",
-    "clientSecret": "proxy-secret-value",
-    "cookieSecret": %q,
-    "allowedCallbackOrigins": ["https://nas.example.com", "https://other.example.com"],
-    "allowedRedirectDomains": ["allowed.example.com"]
-  }`, forwardAuthCookieSecret)
-	h, conf := newTestHandlerWithConfig(t, extra)
+	h, conf := newTestHandlerWithEnv(t, map[string]string{
+		"MYOAUTH_FORWARD_AUTH_ENABLED":                  "true",
+		"MYOAUTH_FORWARD_AUTH_CLIENT_ID":                "proxy",
+		"MYOAUTH_FORWARD_AUTH_CLIENT_SECRET":            "proxy-secret-value",
+		"MYOAUTH_FORWARD_AUTH_COOKIE_SECRET":            forwardAuthCookieSecret,
+		"MYOAUTH_FORWARD_AUTH_ALLOWED_CALLBACK_ORIGINS": "https://nas.example.com,https://other.example.com",
+		"MYOAUTH_FORWARD_AUTH_ALLOWED_REDIRECT_DOMAINS": "allowed.example.com",
+	})
 	if err := h.EnsureForwardAuthClient(); err != nil {
 		t.Fatalf("EnsureForwardAuthClient: %v", err)
 	}
@@ -322,15 +318,13 @@ func TestForwardAuthStartDisallowedHostReturns400(t *testing.T) {
 }
 
 func TestForwardAuthEnsureClientSeedsAndUnionsRedirects(t *testing.T) {
-	extra := fmt.Sprintf(`,
-  "forwardAuth": {
-    "enabled": true,
-    "clientId": "proxy",
-    "clientSecret": "proxy-secret-value",
-    "cookieSecret": %q,
-    "allowedCallbackOrigins": ["https://a.example.com", "https://b.example.com"]
-  }`, forwardAuthCookieSecret)
-	h, _ := newTestHandlerWithConfig(t, extra)
+	h, _ := newTestHandlerWithEnv(t, map[string]string{
+		"MYOAUTH_FORWARD_AUTH_ENABLED":                  "true",
+		"MYOAUTH_FORWARD_AUTH_CLIENT_ID":                "proxy",
+		"MYOAUTH_FORWARD_AUTH_CLIENT_SECRET":            "proxy-secret-value",
+		"MYOAUTH_FORWARD_AUTH_COOKIE_SECRET":            forwardAuthCookieSecret,
+		"MYOAUTH_FORWARD_AUTH_ALLOWED_CALLBACK_ORIGINS": "https://a.example.com,https://b.example.com",
+	})
 	if err := h.EnsureForwardAuthClient(); err != nil {
 		t.Fatalf("EnsureForwardAuthClient: %v", err)
 	}
@@ -931,6 +925,30 @@ func TestForwardAuthSignOutDeletesSessionAndRevokes(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("auth after sign_out = %d, want 401", resp.StatusCode)
+	}
+}
+
+// MYOAUTH_FORWARD_AUTH_SESSION_TTL_SECONDS must reach ForwardAuthConfig and be
+// what forwardAuthSessionTTL returns, overriding the refresh-token-age default.
+func TestForwardAuthSessionTTLFromEnv(t *testing.T) {
+	h, conf := newTestHandlerWithEnv(t, map[string]string{
+		"MYOAUTH_FORWARD_AUTH_ENABLED":             "true",
+		"MYOAUTH_FORWARD_AUTH_CLIENT_SECRET":       "s",
+		"MYOAUTH_FORWARD_AUTH_COOKIE_SECRET":       forwardAuthCookieSecret,
+		"MYOAUTH_FORWARD_AUTH_SESSION_TTL_SECONDS": "3600",
+	})
+	if conf.ForwardAuth == nil || conf.ForwardAuth.SessionTtlSeconds != 3600 {
+		t.Fatalf("SessionTtlSeconds = %+v, want 3600", conf.ForwardAuth)
+	}
+	client := &dal.Client{RefreshTokenAge: 720}
+	if got := h.forwardAuthSessionTTL(client); got != time.Hour {
+		t.Fatalf("forwardAuthSessionTTL = %v, want 1h from the env override", got)
+	}
+
+	// Without the override the TTL derives from the proxy client's refresh age.
+	h2, _ := newForwardAuthTestHandler(t)
+	if got := h2.forwardAuthSessionTTL(client); got != 720*time.Hour {
+		t.Fatalf("default forwardAuthSessionTTL = %v, want 720h", got)
 	}
 }
 

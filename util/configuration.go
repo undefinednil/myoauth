@@ -1,7 +1,6 @@
 package util
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -10,45 +9,48 @@ import (
 	"strings"
 )
 
+// Configuration holds the runtime configuration. It is populated exclusively
+// from MYOAUTH_* environment variables (see applyEnvOverrides) plus the
+// built-in defaults (see applyDefaults) — there is no configuration file.
 type Configuration struct {
-	HttpAddress                string             `json:"httpAddress"`
-	AllowedOrigins             []string           `json:"allowedOrigins"`
-	SecureCookies              bool               `json:"secureCookies"`
-	OidcIssuer                 string             `json:"oidcIssuer"`
-	OidcLoginUrl               string             `json:"oidcLoginUrl"`
-	InvitationCode             string             `json:"invitationCode"`
-	AdminPassword              string             `json:"adminPassword"`
-	AuthorizationCodeLength    int                `json:"authorizationCodeLength"`
-	RefreshTokenLength         int                `json:"refreshTokenLength"`
-	PasswordMinLength          int                `json:"passwordMinLength"`
-	DbPath                     string             `json:"dbPath"`
-	LogFilePath                string             `json:"logFilePath"`
-	RsaPrivateKeyPath          string             `json:"rsaPrivateKeyPath"`
-	RateLimitEnabled           *bool              `json:"rateLimitEnabled"`
-	RateLimitRequestsPerMinute int                `json:"rateLimitRequestsPerMinute"`
-	RateLimitBurst             int                `json:"rateLimitBurst"`
-	RateLimitMaxKeys           int                `json:"rateLimitMaxKeys"`
-	TrustProxy                 bool               `json:"trustProxy"`
-	ForwardAuth                *ForwardAuthConfig `json:"forwardAuth"`
+	HttpAddress                string
+	AllowedOrigins             []string
+	SecureCookies              bool
+	OidcIssuer                 string
+	OidcLoginUrl               string
+	InvitationCode             string
+	AdminPassword              string
+	AuthorizationCodeLength    int
+	RefreshTokenLength         int
+	PasswordMinLength          int
+	DbPath                     string
+	LogFilePath                string
+	RsaPrivateKeyPath          string
+	RateLimitEnabled           *bool
+	RateLimitRequestsPerMinute int
+	RateLimitBurst             int
+	RateLimitMaxKeys           int
+	TrustProxy                 bool
+	ForwardAuth                *ForwardAuthConfig
 }
 
 // ForwardAuthConfig configures the built-in OIDC forward-auth service that
 // replaces oauth2-proxy's `auth_request` role. The whole feature is opt-in: a
 // nil value (or enabled=false) keeps the server behaving exactly as before.
 type ForwardAuthConfig struct {
-	Enabled                bool     `json:"enabled"`
-	ClientId               string   `json:"clientId"`
-	ClientSecret           string   `json:"clientSecret"`
-	CookieSecret           string   `json:"cookieSecret"`
-	CookieName             string   `json:"cookieName"`
-	CookieDomain           string   `json:"cookieDomain"`
-	CookieSecure           bool     `json:"cookieSecure"`
-	SessionTtlSeconds      int      `json:"sessionTtlSeconds"`
-	LoginPath              string   `json:"loginPath"`
-	CallbackPath           string   `json:"callbackPath"`
-	AuthPath               string   `json:"authPath"`
-	SignOutPath            string   `json:"signOutPath"`
-	AllowedRedirectDomains []string `json:"allowedRedirectDomains"`
+	Enabled                bool
+	ClientId               string
+	ClientSecret           string
+	CookieSecret           string
+	CookieName             string
+	CookieDomain           string
+	CookieSecure           bool
+	SessionTtlSeconds      int
+	LoginPath              string
+	CallbackPath           string
+	AuthPath               string
+	SignOutPath            string
+	AllowedRedirectDomains []string
 	// AllowedCallbackOrigins lists the exact origins (scheme + host[:port],
 	// e.g. "https://nas.example.com") of the protected applications whose host
 	// may complete the forward-auth login flow. This makes `/oauth2/*`
@@ -57,20 +59,14 @@ type ForwardAuthConfig struct {
 	// cookieDomain. Each origin's `<origin><callbackPath>` is registered as an
 	// allowed redirect_uri on the managed proxy client. When empty, the issuer
 	// origin is used, preserving the single-host deployment.
-	AllowedCallbackOrigins []string `json:"allowedCallbackOrigins"`
+	AllowedCallbackOrigins []string
 }
 
-func (c *Configuration) Init(path string) error {
-	confJson, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	if err := json.Unmarshal(confJson, &c); err != nil {
-		return err
-	}
-	// Environment variables win over the JSON file; an unset or empty variable
-	// leaves the JSON value untouched. Applied before validation/defaults so the
-	// usual checks run on the effective values.
+// Init builds the effective configuration from the environment only:
+// MYOAUTH_* variables are applied on top of the zero value, then the required
+// fields are checked and the defaults/validation run. There is no config file
+// argument and no file is read.
+func (c *Configuration) Init() error {
 	if err := c.applyEnvOverrides(); err != nil {
 		return err
 	}
@@ -82,6 +78,11 @@ func (c *Configuration) Init(path string) error {
 	if strings.TrimSpace(c.AdminPassword) == "" {
 		return errors.New("adminPassword is required")
 	}
+	// An empty invitation code makes /setup/register (the only self-service
+	// signup path) accept an empty code, i.e. open registration. Require it.
+	if strings.TrimSpace(c.InvitationCode) == "" {
+		return errors.New("invitationCode is required")
+	}
 	c.OidcIssuer = strings.TrimSuffix(strings.TrimSpace(c.OidcIssuer), "/")
 	c.applyDefaults()
 	if err := c.validateForwardAuth(); err != nil {
@@ -91,6 +92,27 @@ func (c *Configuration) Init(path string) error {
 }
 
 func (c *Configuration) applyDefaults() {
+	if strings.TrimSpace(c.HttpAddress) == "" {
+		c.HttpAddress = "0.0.0.0:20476"
+	}
+	if strings.TrimSpace(c.DbPath) == "" {
+		c.DbPath = "myoauth.db"
+	}
+	if strings.TrimSpace(c.LogFilePath) == "" {
+		c.LogFilePath = "my-oauth.log"
+	}
+	if strings.TrimSpace(c.RsaPrivateKeyPath) == "" {
+		c.RsaPrivateKeyPath = "oauth.private.pem"
+	}
+	if c.AuthorizationCodeLength <= 0 {
+		c.AuthorizationCodeLength = 128
+	}
+	if c.RefreshTokenLength <= 0 {
+		c.RefreshTokenLength = 128
+	}
+	if c.PasswordMinLength <= 0 {
+		c.PasswordMinLength = 8
+	}
 	if c.RateLimitEnabled == nil {
 		enabled := true
 		c.RateLimitEnabled = &enabled
@@ -205,7 +227,7 @@ func (c *Configuration) RateLimitingEnabled() bool {
 
 // envString returns the value of an environment variable and true when it is set
 // and not blank. A blank value is treated as "unset" so a stray empty `.env`
-// entry cannot wipe out a JSON value.
+// entry leaves the built-in default in place.
 func envString(key string) (string, bool) {
 	value, ok := os.LookupEnv(key)
 	if !ok || strings.TrimSpace(value) == "" {
@@ -241,7 +263,7 @@ func splitEnvCSV(value string) []string {
 
 // forwardAuthEnvKeys are the MYOAUTH_FORWARD_AUTH_* variables that, when any one
 // is set, require the ForwardAuth struct to exist so the override can be applied
-// (a minimal conf.json without a forwardAuth block still works).
+// (an otherwise env-only configuration without forward auth still works).
 var forwardAuthEnvKeys = []string{
 	"MYOAUTH_FORWARD_AUTH_ENABLED",
 	"MYOAUTH_FORWARD_AUTH_CLIENT_ID",
@@ -250,13 +272,15 @@ var forwardAuthEnvKeys = []string{
 	"MYOAUTH_FORWARD_AUTH_COOKIE_NAME",
 	"MYOAUTH_FORWARD_AUTH_COOKIE_DOMAIN",
 	"MYOAUTH_FORWARD_AUTH_COOKIE_SECURE",
+	"MYOAUTH_FORWARD_AUTH_SESSION_TTL_SECONDS",
 	"MYOAUTH_FORWARD_AUTH_ALLOWED_CALLBACK_ORIGINS",
 	"MYOAUTH_FORWARD_AUTH_ALLOWED_REDIRECT_DOMAINS",
 }
 
-// applyEnvOverrides layers MYOAUTH_* environment variables on top of the parsed
-// JSON configuration. It is intentionally separate from validation/defaults so
-// the existing checks still run afterwards on the effective values.
+// applyEnvOverrides layers every accepted MYOAUTH_* environment variable on top
+// of the current (initially zero) configuration. It is intentionally separate
+// from validation/defaults so the existing checks still run afterwards on the
+// effective values.
 func (c *Configuration) applyEnvOverrides() error {
 	if v, ok := envString("MYOAUTH_HTTP_ADDRESS"); ok {
 		c.HttpAddress = v
@@ -306,12 +330,53 @@ func (c *Configuration) applyEnvOverrides() error {
 		}
 		c.PasswordMinLength = n
 	}
+	if v, ok := envString("MYOAUTH_AUTHORIZATION_CODE_LENGTH"); ok {
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil {
+			return fmt.Errorf("MYOAUTH_AUTHORIZATION_CODE_LENGTH: invalid integer %q", v)
+		}
+		c.AuthorizationCodeLength = n
+	}
+	if v, ok := envString("MYOAUTH_REFRESH_TOKEN_LENGTH"); ok {
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil {
+			return fmt.Errorf("MYOAUTH_REFRESH_TOKEN_LENGTH: invalid integer %q", v)
+		}
+		c.RefreshTokenLength = n
+	}
+	if v, ok := envString("MYOAUTH_RATE_LIMIT_ENABLED"); ok {
+		b, err := parseEnvBool(v)
+		if err != nil {
+			return fmt.Errorf("MYOAUTH_RATE_LIMIT_ENABLED: %w", err)
+		}
+		c.RateLimitEnabled = &b
+	}
+	if v, ok := envString("MYOAUTH_RATE_LIMIT_REQUESTS_PER_MINUTE"); ok {
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil {
+			return fmt.Errorf("MYOAUTH_RATE_LIMIT_REQUESTS_PER_MINUTE: invalid integer %q", v)
+		}
+		c.RateLimitRequestsPerMinute = n
+	}
+	if v, ok := envString("MYOAUTH_RATE_LIMIT_BURST"); ok {
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil {
+			return fmt.Errorf("MYOAUTH_RATE_LIMIT_BURST: invalid integer %q", v)
+		}
+		c.RateLimitBurst = n
+	}
+	if v, ok := envString("MYOAUTH_RATE_LIMIT_MAX_KEYS"); ok {
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil {
+			return fmt.Errorf("MYOAUTH_RATE_LIMIT_MAX_KEYS: invalid integer %q", v)
+		}
+		c.RateLimitMaxKeys = n
+	}
 	return c.applyForwardAuthEnvOverrides()
 }
 
 // applyForwardAuthEnvOverrides applies MYOAUTH_FORWARD_AUTH_* overrides, creating
-// the ForwardAuth struct first when any of those variables is set and the JSON
-// file did not provide one.
+// the ForwardAuth struct first when any of those variables is set.
 func (c *Configuration) applyForwardAuthEnvOverrides() error {
 	anySet := false
 	for _, key := range forwardAuthEnvKeys {
@@ -355,6 +420,13 @@ func (c *Configuration) applyForwardAuthEnvOverrides() error {
 			return fmt.Errorf("MYOAUTH_FORWARD_AUTH_COOKIE_SECURE: %w", err)
 		}
 		fa.CookieSecure = b
+	}
+	if v, ok := envString("MYOAUTH_FORWARD_AUTH_SESSION_TTL_SECONDS"); ok {
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil {
+			return fmt.Errorf("MYOAUTH_FORWARD_AUTH_SESSION_TTL_SECONDS: invalid integer %q", v)
+		}
+		fa.SessionTtlSeconds = n
 	}
 	if v, ok := envString("MYOAUTH_FORWARD_AUTH_ALLOWED_CALLBACK_ORIGINS"); ok {
 		fa.AllowedCallbackOrigins = splitEnvCSV(v)

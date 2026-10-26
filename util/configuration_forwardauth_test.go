@@ -1,104 +1,111 @@
 package util
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func writeConf(t *testing.T, forwardAuthJSON string) string {
-	t.Helper()
-	dir := t.TempDir()
-	conf := `{
-  "httpAddress": "127.0.0.1:0",
-  "oidcIssuer": "https://issuer.example.com",
-  "adminPassword": "x",
-  "dbPath": "` + filepath.ToSlash(filepath.Join(dir, "test.db")) + `",
-  "logFilePath": "` + filepath.ToSlash(filepath.Join(dir, "test.log")) + `",
-  "rsaPrivateKeyPath": "` + filepath.ToSlash(filepath.Join(dir, "key.pem")) + `"` + forwardAuthJSON + `
-}`
-	path := filepath.Join(dir, "conf.json")
-	if err := os.WriteFile(path, []byte(conf), 0o600); err != nil {
-		t.Fatalf("write conf: %v", err)
-	}
-	return path
-}
-
 func TestForwardAuthConfigValidation(t *testing.T) {
 	cases := []struct {
-		name        string
-		forwardAuth string
-		wantErr     string
+		name    string
+		env     map[string]string
+		wantErr string
 	}{
 		{
 			name: "disabled needs no secrets",
-			forwardAuth: `,
-  "forwardAuth": { "enabled": false }`,
+			// No MYOAUTH_FORWARD_AUTH_* variables: ForwardAuth stays nil.
 		},
 		{
 			name: "enabled missing clientSecret",
-			forwardAuth: `,
-  "forwardAuth": { "enabled": true, "cookieSecret": "` + strings.Repeat("k", 32) + `" }`,
+			env: map[string]string{
+				"MYOAUTH_FORWARD_AUTH_ENABLED":       "true",
+				"MYOAUTH_FORWARD_AUTH_COOKIE_SECRET": strings.Repeat("k", 32),
+			},
 			wantErr: "clientSecret",
 		},
 		{
 			name: "enabled missing cookieSecret",
-			forwardAuth: `,
-  "forwardAuth": { "enabled": true, "clientSecret": "s" }`,
+			env: map[string]string{
+				"MYOAUTH_FORWARD_AUTH_ENABLED":       "true",
+				"MYOAUTH_FORWARD_AUTH_CLIENT_SECRET": "s",
+			},
 			wantErr: "cookieSecret",
 		},
 		{
 			name: "enabled short cookieSecret",
-			forwardAuth: `,
-  "forwardAuth": { "enabled": true, "clientSecret": "s", "cookieSecret": "too-short" }`,
+			env: map[string]string{
+				"MYOAUTH_FORWARD_AUTH_ENABLED":       "true",
+				"MYOAUTH_FORWARD_AUTH_CLIENT_SECRET": "s",
+				"MYOAUTH_FORWARD_AUTH_COOKIE_SECRET": "too-short",
+			},
 			wantErr: "at least 32",
 		},
 		{
 			name: "enabled valid",
-			forwardAuth: `,
-  "forwardAuth": { "enabled": true, "clientSecret": "s", "cookieSecret": "` + strings.Repeat("k", 32) + `" }`,
+			env: map[string]string{
+				"MYOAUTH_FORWARD_AUTH_ENABLED":       "true",
+				"MYOAUTH_FORWARD_AUTH_CLIENT_SECRET": "s",
+				"MYOAUTH_FORWARD_AUTH_COOKIE_SECRET": strings.Repeat("k", 32),
+			},
 		},
 		{
 			name: "valid allowedCallbackOrigins",
-			forwardAuth: `,
-  "forwardAuth": { "enabled": true, "clientSecret": "s", "cookieSecret": "` + strings.Repeat("k", 32) + `", "allowedCallbackOrigins": ["https://nas.example.com", "http://localhost:8080"] }`,
+			env: map[string]string{
+				"MYOAUTH_FORWARD_AUTH_ENABLED":                  "true",
+				"MYOAUTH_FORWARD_AUTH_CLIENT_SECRET":            "s",
+				"MYOAUTH_FORWARD_AUTH_COOKIE_SECRET":            strings.Repeat("k", 32),
+				"MYOAUTH_FORWARD_AUTH_ALLOWED_CALLBACK_ORIGINS": "https://nas.example.com,http://localhost:8080",
+			},
 		},
 		{
 			name: "allowedCallbackOrigins missing scheme",
-			forwardAuth: `,
-  "forwardAuth": { "enabled": true, "clientSecret": "s", "cookieSecret": "` + strings.Repeat("k", 32) + `", "allowedCallbackOrigins": ["nas.example.com"] }`,
+			env: map[string]string{
+				"MYOAUTH_FORWARD_AUTH_ENABLED":                  "true",
+				"MYOAUTH_FORWARD_AUTH_CLIENT_SECRET":            "s",
+				"MYOAUTH_FORWARD_AUTH_COOKIE_SECRET":            strings.Repeat("k", 32),
+				"MYOAUTH_FORWARD_AUTH_ALLOWED_CALLBACK_ORIGINS": "nas.example.com",
+			},
 			wantErr: "http or https",
 		},
 		{
 			name: "allowedCallbackOrigins bad scheme",
-			forwardAuth: `,
-  "forwardAuth": { "enabled": true, "clientSecret": "s", "cookieSecret": "` + strings.Repeat("k", 32) + `", "allowedCallbackOrigins": ["ftp://nas.example.com"] }`,
+			env: map[string]string{
+				"MYOAUTH_FORWARD_AUTH_ENABLED":                  "true",
+				"MYOAUTH_FORWARD_AUTH_CLIENT_SECRET":            "s",
+				"MYOAUTH_FORWARD_AUTH_COOKIE_SECRET":            strings.Repeat("k", 32),
+				"MYOAUTH_FORWARD_AUTH_ALLOWED_CALLBACK_ORIGINS": "ftp://nas.example.com",
+			},
 			wantErr: "http or https",
 		},
 		{
 			name: "allowedCallbackOrigins missing host",
-			forwardAuth: `,
-  "forwardAuth": { "enabled": true, "clientSecret": "s", "cookieSecret": "` + strings.Repeat("k", 32) + `", "allowedCallbackOrigins": ["https://"] }`,
+			env: map[string]string{
+				"MYOAUTH_FORWARD_AUTH_ENABLED":                  "true",
+				"MYOAUTH_FORWARD_AUTH_CLIENT_SECRET":            "s",
+				"MYOAUTH_FORWARD_AUTH_COOKIE_SECRET":            strings.Repeat("k", 32),
+				"MYOAUTH_FORWARD_AUTH_ALLOWED_CALLBACK_ORIGINS": "https://",
+			},
 			wantErr: "host",
 		},
 		{
 			name: "allowedCallbackOrigins with path",
-			forwardAuth: `,
-  "forwardAuth": { "enabled": true, "clientSecret": "s", "cookieSecret": "` + strings.Repeat("k", 32) + `", "allowedCallbackOrigins": ["https://nas.example.com/app"] }`,
+			env: map[string]string{
+				"MYOAUTH_FORWARD_AUTH_ENABLED":                  "true",
+				"MYOAUTH_FORWARD_AUTH_CLIENT_SECRET":            "s",
+				"MYOAUTH_FORWARD_AUTH_COOKIE_SECRET":            strings.Repeat("k", 32),
+				"MYOAUTH_FORWARD_AUTH_ALLOWED_CALLBACK_ORIGINS": "https://nas.example.com/app",
+			},
 			wantErr: "bare origin",
-		},
-		{
-			name: "allowedCallbackOrigins empty entry",
-			forwardAuth: `,
-  "forwardAuth": { "enabled": true, "clientSecret": "s", "cookieSecret": "` + strings.Repeat("k", 32) + `", "allowedCallbackOrigins": [""] }`,
-			wantErr: "must not be empty",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			setTestBaseEnv(t)
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
 			conf := new(Configuration)
-			err := conf.Init(writeConf(t, tc.forwardAuth))
+			err := conf.Init()
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
@@ -130,6 +137,10 @@ func TestNormalizeCallbackOriginHostValidation(t *testing.T) {
 		{name: "comma in host", entry: "https://a,b.example.com", wantErr: "invalid character"},
 		{name: "backslash in host", entry: `https://a\b.example.com`, wantErr: "not a valid origin"},
 		{name: "trailing dot in host", entry: "https://nas.example.com.", wantErr: "trailing dot"},
+		// splitEnvCSV drops these before validation, but the function itself
+		// must still reject them (defence in depth).
+		{name: "empty entry", entry: "", wantErr: "must not be empty"},
+		{name: "whitespace entry", entry: "   ", wantErr: "must not be empty"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -151,9 +162,12 @@ func TestNormalizeCallbackOriginHostValidation(t *testing.T) {
 }
 
 func TestForwardAuthConfigDefaults(t *testing.T) {
+	setTestBaseEnv(t)
+	t.Setenv("MYOAUTH_FORWARD_AUTH_ENABLED", "true")
+	t.Setenv("MYOAUTH_FORWARD_AUTH_CLIENT_SECRET", "s")
+	t.Setenv("MYOAUTH_FORWARD_AUTH_COOKIE_SECRET", strings.Repeat("k", 32))
 	conf := new(Configuration)
-	if err := conf.Init(writeConf(t, `,
-  "forwardAuth": { "enabled": true, "clientSecret": "s", "cookieSecret": "`+strings.Repeat("k", 32)+`" }`)); err != nil {
+	if err := conf.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 	fa := conf.ForwardAuth
@@ -172,9 +186,13 @@ func TestForwardAuthConfigDefaults(t *testing.T) {
 // allowedCallbackOrigins entries are normalised to a bare origin (trailing
 // slash removed) so <origin><callbackPath> never doubles the separator.
 func TestForwardAuthAllowedCallbackOriginsNormalized(t *testing.T) {
+	setTestBaseEnv(t)
+	t.Setenv("MYOAUTH_FORWARD_AUTH_ENABLED", "true")
+	t.Setenv("MYOAUTH_FORWARD_AUTH_CLIENT_SECRET", "s")
+	t.Setenv("MYOAUTH_FORWARD_AUTH_COOKIE_SECRET", strings.Repeat("k", 32))
+	t.Setenv("MYOAUTH_FORWARD_AUTH_ALLOWED_CALLBACK_ORIGINS", "https://nas.example.com/,  http://localhost:8080  ")
 	conf := new(Configuration)
-	if err := conf.Init(writeConf(t, `,
-  "forwardAuth": { "enabled": true, "clientSecret": "s", "cookieSecret": "`+strings.Repeat("k", 32)+`", "allowedCallbackOrigins": ["https://nas.example.com/", "  http://localhost:8080  "] }`)); err != nil {
+	if err := conf.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 	got := conf.ForwardAuth.AllowedCallbackOrigins
@@ -192,11 +210,13 @@ func TestForwardAuthAllowedCallbackOriginsNormalized(t *testing.T) {
 // The validator runs even when the malformed entry would only be reached at
 // request time, so a typo fails the boot.
 func TestForwardAuthAllowedCallbackOriginsDisabledIsNotValidated(t *testing.T) {
-	conf := new(Configuration)
+	setTestBaseEnv(t)
 	// Disabled: malformed entries are ignored, matching every other
 	// forwardAuth field.
-	if err := conf.Init(writeConf(t, `,
-  "forwardAuth": { "enabled": false, "allowedCallbackOrigins": ["not-an-origin"] }`)); err != nil {
+	t.Setenv("MYOAUTH_FORWARD_AUTH_ENABLED", "false")
+	t.Setenv("MYOAUTH_FORWARD_AUTH_ALLOWED_CALLBACK_ORIGINS", "not-an-origin")
+	conf := new(Configuration)
+	if err := conf.Init(); err != nil {
 		t.Fatalf("disabled config must not validate allowedCallbackOrigins: %v", err)
 	}
 }

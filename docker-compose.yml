@@ -3,23 +3,23 @@
 # The container runs as uid:gid 100:101 (non-root, see Dockerfile), so the host
 # files it reads/writes must be owned by / writable to 100:101.
 #
+# The single configuration file is `.env`. The container image ships safe
+# defaults (port, /data paths, secure cookies, trust proxy), so `.env` only
+# needs the per-deployment values (issuer, admin password, optional forward
+# auth). The RSA signing key is auto-generated in /data on first boot.
+#
 # First run (from the repo root):
 #   1. cp .env.example .env            # then edit the values you need
-#   2. cp conf.example.json conf.json  # already Docker-ready; edit if needed
-#   3. bash scripts/gen_keys.sh oauth.private.pem   # generate the RSA key
-#   4. mkdir -p data
-#   5. chown -R 100:101 data                        # writable by the container
-#   6. chown 100:101 oauth.private.pem && chmod 640 oauth.private.pem
-#   7. docker compose up -d --build
+#   2. mkdir -p data
+#   3. chown -R 100:101 data           # writable by the container
+#   4. docker compose up -d --build
+#
+# The key is generated in /data (and thus persists across restarts). To use a
+# pre-made key instead, mount it and point MYOAUTH_RSA_PRIVATE_KEY_PATH at it
+# (e.g. `bash scripts/gen_keys.sh oauth.private.pem` then mount it read-only).
 #
 # The port is published on loopback only (127.0.0.1:20476), so it is not exposed
 # publicly; put a reverse proxy in front for external access.
-#
-# The `.env` file is optional: environment variables win over conf.json, and an
-# unset or empty variable leaves the JSON value untouched. The image's default
-# CMD passes `-conf /config/conf.json`; to use a different config path, override
-# `command:`. The `-conf` flag takes precedence over the (optional) MYOAUTH_CONF
-# env var, see main.go.
 
 services:
   myoauth:
@@ -37,13 +37,10 @@ services:
       # Loopback only: never exposed on a public interface.
       - "127.0.0.1:20476:20476"
     volumes:
-      # Persistent SQLite database + log file.
+      # Persistent SQLite database, log file and auto-generated RSA key.
       - ./data:/data
-      # Config and RSA key are read-only inside the container.
-      - ./conf.json:/config/conf.json:ro
-      - ./oauth.private.pem:/config/oauth.private.pem:ro
     restart: unless-stopped
-    # NOTE: 20476 is coupled to `httpAddress` in conf.json; change both together.
+    # NOTE: 20476 is coupled to MYOAUTH_HTTP_ADDRESS; change both together.
     healthcheck:
       test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:20476/health"]
       interval: 30s

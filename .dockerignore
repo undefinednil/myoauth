@@ -24,8 +24,6 @@ data/
 
 # Secrets and local config
 .env
-conf.json
-conf-local.json
 **/*.pem
 private_key
 

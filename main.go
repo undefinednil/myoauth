@@ -3,12 +3,10 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -20,8 +18,6 @@ import (
 )
 
 func main() {
-	confPath := flag.String("conf", "", "path to the configuration file (default ./conf.json)")
-	flag.Parse()
 	// graceful exit
 	var cleanUpErr error
 	exitedCleanly := false
@@ -34,15 +30,10 @@ func main() {
 		}
 	}()
 
-	if strings.TrimSpace(*confPath) == "" {
-		*confPath = strings.TrimSpace(os.Getenv("MYOAUTH_CONF"))
-	}
-	if strings.TrimSpace(*confPath) == "" {
-		*confPath = "./conf.json"
-	}
-
+	// Configuration comes exclusively from the MYOAUTH_* environment variables
+	// (typically loaded from .env); there is no config-file flag or argument.
 	conf := new(util.Configuration)
-	if err := conf.Init(*confPath); err != nil {
+	if err := conf.Init(); err != nil {
 		panic(err)
 	}
 

@@ -2,41 +2,26 @@
 set -euo pipefail
 
 # Generates RSA keys for my-oauth with sensible defaults.
-# By default it reads conf.json:rsaPrivateKeyPath and writes there,
-# so no extra server-side configuration is needed.
+# MyOAuth auto-generates the signing key on first boot, so this script is only
+# for operators who prefer to manage the key explicitly. It defaults to
+# oauth.private.pem and writes a matching public key alongside.
 #
 # Usage:
 #   ./scripts/gen_keys.sh
 #   ./scripts/gen_keys.sh /path/to/private.pem
 #   RSA_BITS=4096 ./scripts/gen_keys.sh
 #   FORCE=1 ./scripts/gen_keys.sh
+#   MYOAUTH_RSA_PRIVATE_KEY_PATH=/data/oauth.private.pem ./scripts/gen_keys.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 BITS="${RSA_BITS:-4096}"
 FORCE_WRITE="${FORCE:-0}"
-CONF_FILE="$REPO_ROOT/conf.json"
 
-extract_private_path_from_conf() {
-  if [[ ! -f "$CONF_FILE" ]]; then
-    return 1
-  fi
-  local line
-  line="$(grep -E '"rsaPrivateKeyPath"[[:space:]]*:' "$CONF_FILE" || true)"
-  if [[ -z "$line" ]]; then
-    return 1
-  fi
-  echo "$line" | sed -E 's/.*"rsaPrivateKeyPath"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/'
-}
-
-PRIVATE_PATH="${1:-}"
-if [[ -z "$PRIVATE_PATH" ]]; then
-  PRIVATE_PATH="$(extract_private_path_from_conf || true)"
-fi
-if [[ -z "$PRIVATE_PATH" ]]; then
-  PRIVATE_PATH="oauth.private.pem"
-fi
+# Path resolution order: first argument, then MYOAUTH_RSA_PRIVATE_KEY_PATH,
+# then the built-in default that matches Configuration.applyDefaults.
+PRIVATE_PATH="${1:-${MYOAUTH_RSA_PRIVATE_KEY_PATH:-oauth.private.pem}}"
 
 if [[ "$PRIVATE_PATH" != /* ]]; then
   PRIVATE_PATH="$REPO_ROOT/$PRIVATE_PATH"
@@ -74,5 +59,5 @@ echo "Generated:"
 echo "  Private key: $PRIVATE_PATH"
 echo "  Public key : $PUBLIC_PATH"
 echo
-echo "For conf.json:"
-echo "  \"rsaPrivateKeyPath\": \"${PRIVATE_PATH}\""
+echo "Point MyOAuth at it with:"
+echo "  MYOAUTH_RSA_PRIVATE_KEY_PATH=${PRIVATE_PATH}"
