@@ -61,7 +61,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/myoauth .
 # =============================================================================
 # alpine instead of distroless: the HEALTHCHECK below needs a shell and an HTTP
 # client (wget, provided by busybox), which distroless images do not ship.
-FROM alpine:3.24@sha256:3f4d6b32e26703c6082839234f43769d5046b3ac7c910033911d1e71d8cd630a AS runtime
+FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf AS runtime
 
 # The runtime user is pinned to uid 100 / gid 101 so that host bind mounts can
 # be chowned deterministically (e.g. `chown -R 100:101 data`).
