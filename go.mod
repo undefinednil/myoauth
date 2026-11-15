@@ -6,7 +6,7 @@ require (
 	github.com/cristalhq/jwt/v5 v5.4.0
 	github.com/glebarez/go-sqlite v1.23.0
 	github.com/google/uuid v1.6.0
-	golang.org/x/crypto v0.58.1-0.20261009181718-2f1f834330b2
+	golang.org/x/crypto v0.59.0
 )
 
 require (
@@ -14,7 +14,7 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
 	modernc.org/cc/v4 v4.31.0 // indirect
 	modernc.org/gc/v3 v3.2.1 // indirect
 	modernc.org/libc v1.80.1 // indirect
